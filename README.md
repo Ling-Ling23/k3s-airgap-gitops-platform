@@ -155,7 +155,7 @@ The platform runs across **four environments**, each mapping to a separate k3s c
 
 | Environment | Purpose |
 |---|---|
-| `dev` | Development — single-node, relaxed limits |
+| `dev` | Development — relaxed limits |
 | `test` | Integration testing |
 | `prod-la` | Production — LA site (replica DB, read traffic) |
 | `prod-atl` | Production — ATL site (primary DB, write traffic) |
