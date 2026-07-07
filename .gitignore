@@ -1,0 +1,21 @@
+
+.vscode/
+etc/systemd/
+docs/*.txt
+info/
+infra/vulcan/vault/xxx/
+/vault/xxx/
+todo/*
+
+# ----- Security: never commit real credentials or kubeconfigs -----
+*.kubeconfig
+*.key
+*.pem
+*.crt
+*.p12
+*.pfx
+*-secrets-dump*
+*-secret-dump*
+docs/info/
+.env
+# .env.example is intentionally NOT ignored — it contains only placeholders

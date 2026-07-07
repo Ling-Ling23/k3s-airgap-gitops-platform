@@ -1,0 +1,26 @@
+namespace: team1
+backend:
+  enabled: true
+frontend:
+  enabled: true
+database:
+  enabled: true
+  nodePort: 30081
+  vault_root_secret_name: team1-database-roots
+image:
+  repository: $ARTIFACTORY/$ARTIFACTORY_SUB_PATH/infrateam-lapw
+  tag: ubuntu20.04
+  pullPolicy: IfNotPresent
+config:
+  appName: app4
+  k3sAppName: app4
+labels:
+  team: team1
+  managed-by: argocd
+  part-of: team1-apps
+global:
+  srcRevision: "unknown"
+gitSync:
+  enabled: true
+  schedule: "*/2 * * * *"  # check every 2 minutes
+  $APP_SOME_GH_REPOSITORY-app4.git

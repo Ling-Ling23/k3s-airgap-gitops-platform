@@ -1,0 +1,76 @@
+# CronJob: checks SHOW MASTER STATUS / SHOW SLAVE STATUS for the app7
+# database in the team2 namespace, once every 15 minutes.
+#
+# Same script/image as the team1 CronJob (see cronjob_team1_tools.yaml)
+# but must run as a separate CronJob because Secrets/ConfigMaps are
+# namespace-scoped — app7's root password lives in `team2-database-roots`,
+# not `team1-database-roots`.
+#
+# View results:
+#   kubectl get jobs -n team2 -l app=db-replication-check
+#   kubectl logs -n team2 job/<latest-job-name>
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: db-replication-check
+  namespace: team2
+  labels:
+    app: db-replication-check
+spec:
+  schedule: "*/15 * * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 5
+  jobTemplate:
+    metadata:
+      labels:
+        app: db-replication-check
+    spec:
+      backoffLimit: 0
+      activeDeadlineSeconds: 300
+      # Auto-delete the Job (and its Pod) 2 days after it finishes, regardless
+      # of successfulJobsHistoryLimit/failedJobsHistoryLimit counts above -
+      # otherwise a failed Job can linger indefinitely if fewer than
+      # failedJobsHistoryLimit newer failures have occurred since.
+      ttlSecondsAfterFinished: 172800
+      template:
+        metadata:
+          labels:
+            app: db-replication-check
+        spec:
+          restartPolicy: Never
+          containers:
+            - name: replication-check
+              image: $ARTIFACTORY/mariadb:11.8.5
+              command:
+                - /bin/bash
+                - /scripts/check-replication.sh
+              env:
+                - name: NAMESPACE
+                  value: team2
+                - name: DB_TARGETS
+                  value: "app7=app7"
+                - name: PUSHGATEWAY_URL
+                  value: "http://prometheus-pushgateway.monitoring.svc.cluster.local:9091"
+              volumeMounts:
+                - name: script
+                  mountPath: /scripts
+                  readOnly: true
+                - name: db-roots
+                  mountPath: /secrets
+                  readOnly: true
+              resources:
+                limits:
+                  cpu: 200m
+                  memory: 128Mi
+                requests:
+                  cpu: 50m
+                  memory: 64Mi
+          volumes:
+            - name: script
+              configMap:
+                name: db-replication-check-script
+                defaultMode: 0755
+            - name: db-roots
+              secret:
+                secretName: team2-database-roots

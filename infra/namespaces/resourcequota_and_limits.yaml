@@ -1,0 +1,173 @@
+#resources.requests: Minimum guaranteed for the pod.
+#resources.limits: Maximum allowed for the pod.
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: app-quota
+  namespace: team1
+spec:
+  hard:
+    requests.cpu: "40"
+    requests.memory: 200Gi
+    requests.storage: "10Ti"
+    limits.cpu: "50"
+    limits.memory: 228Gi
+---
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: app-quota
+  namespace: team3
+spec:
+  hard:
+    requests.cpu: "10"
+    requests.memory: 50Gi
+    requests.storage: "2.8Ti"
+    limits.cpu: "13.3"
+    limits.memory: 70Gi
+---
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: app-quota
+  namespace: team2
+spec:
+  hard:
+    requests.cpu: "2"
+    requests.memory: 4Gi
+    requests.storage: "0.6Ti"
+    limits.cpu: "3"
+    limits.memory: 6Gi
+
+#spec:
+#  hard:
+#    requests.cpu: "10"
+#    requests.memory: 20Gi
+#    requests.storage: "10Ti"
+#    limits.cpu: "50"
+#    limits.memory: 228Gi
+#All pods in the namespace can request up to 10 CPUs and 20Gi memory (guaranteed).
+#The namespace can burst up to 50 CPUs and 228Gi memory if available in the cluster.
+#Storage requests are capped at 10Ti.
+#If each pod requests 1 CPU and 2Gi memory, you can deploy up to 10 pods (because 10 × 1 CPU = 10 CPUs, 10 × 2Gi = 20Gi).
+#The maximum number of pods = requests.cpu / (per-pod CPU request), and requests.memory / (per-pod memory request), whichever is lower.
+
+# ---------------------------------------------------------------------------
+# LimitRange: per-container defaults + ceilings.
+#
+# Why: any container with NO resources.limits.memory reports
+# container_spec_memory_limit_bytes=0 to cAdvisor, which makes the
+# ContainerHighMemoryUsage Prometheus alert (working_set / limit * 100)
+# divide by zero and show "+Inf%". A LimitRange auto-injects
+# default/defaultRequest onto any container in the namespace that doesn't
+# specify its own resources, so it always has a real, non-zero limit.
+# It also caps the max any single container can request/limit, which
+# matters most in namespaces that already share a ResourceQuota (so one
+# runaway container can't eat the whole namespace budget).
+#
+# These are starting points based on what's actually running in each
+# namespace today - re-tune per `kubectl top pod -n <ns>` history and your
+# actual node sizes (`kubectl describe nodes`).
+# ---------------------------------------------------------------------------
+---
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: default-limits
+  namespace: monitoring
+spec:
+  limits:
+    - type: Container
+      defaultRequest:
+        cpu: 100m
+        memory: 128Mi
+      default:
+        cpu: 250m
+        memory: 512Mi
+      max:
+        cpu: "2"
+        memory: 4Gi
+---
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: default-limits
+  namespace: logging
+spec:
+  limits:
+    - type: Container
+      defaultRequest:
+        cpu: 100m
+        memory: 256Mi
+      default:
+        cpu: 500m
+        memory: 1Gi
+      max:
+        cpu: "2"
+        memory: 2Gi
+---
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: default-limits
+  namespace: argocd
+spec:
+  limits:
+    - type: Container
+      defaultRequest:
+        cpu: 100m
+        memory: 128Mi
+      default:
+        cpu: 250m
+        memory: 256Mi
+      max:
+        cpu: "1"
+        memory: 1Gi
+---
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: default-limits
+  namespace: arc-systems
+spec:
+  limits:
+    - type: Container
+      defaultRequest:
+        cpu: 100m
+        memory: 128Mi
+      default:
+        cpu: 250m
+        memory: 256Mi
+      max:
+        cpu: "1"
+        memory: 512Mi
+---
+# arc-runners: highest priority namespace for this - the actual GitHub Actions
+# runner pods (argocd/vulcan/actions-runner-set/actions-runner-set.yaml)
+# currently ship with NO resources block at all, so every runner container is
+# unbounded today and is very likely a chunk of your 100+ +Inf% alerts.
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: default-limits
+  namespace: arc-runners
+spec:
+  limits:
+    - type: Container
+      defaultRequest:
+        cpu: 250m
+        memory: 512Mi
+      default:
+        cpu: "1"
+        memory: 2Gi
+      max:
+        cpu: "4"
+        memory: 8Gi
+
+# NOTE: kube-system intentionally has no LimitRange here. It hosts core
+# cluster components not fully managed by this repo (CoreDNS, metrics-server,
+# ProxySQL, plus whatever k3s/Traefik/local-path-provisioner ship by default).
+# A namespace-wide default there is higher risk - tune it separately and
+# deliberately if you decide it's needed, after checking `kubectl get pods
+# -n kube-system` and `kubectl top pod -n kube-system` to confirm what's
+# actually running unbounded.

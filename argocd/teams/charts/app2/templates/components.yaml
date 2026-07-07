@@ -1,0 +1,27 @@
+{{ include "team1-common.configmap" . }}
+---
+{{ include "team1-common.git-sync-cronjob" . }}
+---
+{{ include "team1-common.backend.deployment" . }}
+---
+{{ include "team1-common.backend.pvc" . }}
+---
+{{ include "team1-common.backend.service" . }}
+---
+{{ include "team1-common.frontend.deployment" . }}
+---
+{{ include "team1-common.frontend.pvc" . }}
+---
+{{ include "team1-common.frontend.service" . }}
+---
+{{ include "team1-common.database.sts" . }}
+---
+{{ include "team1-common.database.svc.headless" . }}
+---
+{{ include "team1-common.database.svc.nodeport" . }}
+---
+{{ include "team1-common.database.replcnf" . }}
+---
+{{ include "team1-common.database.replenv" . }}
+---
+{{ include "team1-common.database.initscripts" . }}

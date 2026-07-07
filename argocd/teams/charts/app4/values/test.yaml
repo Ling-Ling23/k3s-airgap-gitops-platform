@@ -1,0 +1,31 @@
+replicaCount: 1
+resources:
+  limits:
+    cpu: 0.5
+    memory: 2G
+  requests:
+    cpu: 0.01
+    memory: 256Mi
+    storage: 20Gi
+config:
+  projectGitBranch: "test"
+hostname: app4-test-ca
+labels:
+  environment: test
+database:
+  resources:
+    limits:
+      cpu: 2
+      memory: 2G
+      storage: 1000Gi
+    requests:
+      cpu: 0.5
+      memory: 512Mi
+      storage: 150Gi
+  replHost: "haproxy.kube-system.svc.cluster.local"  # LA standby replicates from ATL via local HAProxy:3340
+  replPort: 3340
+  replication:
+    serverId: 2               # must be unique per cluster (1=ATL/primary, 2=LA/standby)
+    gtidDomainId: 2           # must match serverId cluster (1=ATL, 2=LA)
+    autoIncrementOffset: 2    # 1=odd rows (ATL), 2=even rows (LA)
+    readOnly: "ON"           # OFF for primary (ATL), ON for standby (LA)

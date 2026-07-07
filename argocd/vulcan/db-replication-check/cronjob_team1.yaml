@@ -1,0 +1,86 @@
+# CronJob: checks SHOW MASTER STATUS / SHOW SLAVE STATUS on every MariaDB
+# StatefulSet in the team1 namespace, once every 15 minutes.
+#
+# Uses the same image as the StatefulSets (already cached on every node) —
+# no custom image needed. Root password is read from the existing
+# `team1-database-roots` secret, mounted as a volume so the pod can look up
+# any app's key by name without per-app env vars.
+#
+# Targets covered (add/remove via DB_TARGETS, format name=secretkey):
+#   app1, app2, app4, app5, app6, app8
+#   dbone, dbtwo   (db_test/ scratch pair — remove if no longer deployed)
+#
+# View results:
+#   kubectl get jobs -n team1 -l app=db-replication-check
+#   kubectl logs -n team1 job/<latest-job-name>
+#
+# A job with any BROKEN/UNREACHABLE/NO_SECRET database exits non-zero, so
+# `kubectl get cronjob db-replication-check -n team1` shows the last
+# run as Failed — convenient for hooking up a future notifier script.
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: db-replication-check
+  namespace: team1
+  labels:
+    app: db-replication-check
+spec:
+  schedule: "*/15 * * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 2
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    metadata:
+      labels:
+        app: db-replication-check
+    spec:
+      backoffLimit: 0
+      activeDeadlineSeconds: 300
+      # Auto-delete the Job (and its Pod) 2 days after it finishes, regardless
+      # of successfulJobsHistoryLimit/failedJobsHistoryLimit counts above -
+      # otherwise a failed Job can linger indefinitely if fewer than
+      # failedJobsHistoryLimit newer failures have occurred since.
+      ttlSecondsAfterFinished: 172800
+      template:
+        metadata:
+          labels:
+            app: db-replication-check
+        spec:
+          restartPolicy: Never
+          containers:
+            - name: replication-check
+              image: $ARTIFACTORY/mariadb:11.8.5
+              command:
+                - /bin/bash
+                - /scripts/check-replication.sh
+              env:
+                - name: NAMESPACE
+                  value: team1
+                - name: DB_TARGETS
+                  # dbtwo has no 'dbtwo' key in team1-database-roots — db_two.yaml
+                  # reuses the 'dbone' key for its root password (see db_test/db_two.yaml)
+                  value: "app1=app1,app2=app2,app4=app4,app5=app5,app6=app6,app8=app8,dbone=dbone,dbtwo=dbone"
+                - name: PUSHGATEWAY_URL
+                  value: "http://prometheus-pushgateway.monitoring.svc.cluster.local:9091"
+              volumeMounts:
+                - name: script
+                  mountPath: /scripts
+                  readOnly: true
+                - name: db-roots
+                  mountPath: /secrets
+                  readOnly: true
+              resources:
+                limits:
+                  cpu: 200m
+                  memory: 128Mi
+                requests:
+                  cpu: 50m
+                  memory: 64Mi
+          volumes:
+            - name: script
+              configMap:
+                name: db-replication-check-script
+                defaultMode: 0755
+            - name: db-roots
+              secret:
+                secretName: team1-database-roots

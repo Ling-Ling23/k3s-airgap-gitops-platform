@@ -1,0 +1,82 @@
+name: Helm Dependency Update
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [dev, test, main]
+    paths:
+      - 'argocd/team1/charts/**/Chart.yaml'
+      - 'argocd/team1/charts/team1-common/**'
+
+jobs:
+  helm-dep-update:
+    runs-on: k3s-self-hosted
+    env:
+      http_proxy: "$PROXY"
+      https_proxy: "$PROXY"
+      no_proxy: "localhost,127.0.0.1,10.0.0.0/8,$ARTIFACTORY,$PRIVATE_GH_FQDN"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4 # clone repo into the pod
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 2  # need HEAD~1 for git diff change detection
+
+      - name: Install Helm
+        run: |
+          HELM_VERSION="v3.14.4"
+          curl -fsSLk "https://get.helm.sh/helm-${HELM_VERSION}-linux-amd64.tar.gz" -o /tmp/helm.tar.gz
+          tar -xzf /tmp/helm.tar.gz -C /tmp
+          sudo mv /tmp/linux-amd64/helm /usr/local/bin/helm
+          helm version
+
+      - name: Run helm dependency update (only for changed charts)
+        run: |
+          CHARTS_DIR="argocd/team1/charts"
+
+          # Signal A: did the shared library change in this push?
+          # If yes, ALL app charts need updating because their bundled .tgz is stale.
+          COMMON_CHANGED=$(git diff HEAD~1 HEAD --name-only -- "${CHARTS_DIR}/team1-common/" | wc -l)
+
+          if [ "$COMMON_CHANGED" -gt 0 ]; then
+            echo ">>> team1-common changed — all app charts will be updated."
+          else
+            echo ">>> team1-common unchanged — only charts with Chart.yaml changes will be updated."
+          fi
+
+          for chart_dir in "${CHARTS_DIR}"/*/; do
+            chart_name=$(basename "${chart_dir}")
+
+            # Skip the library chart itself — it has no dependencies to update.
+            if [ "$chart_name" = "team1-common" ]; then
+              echo ">>> Skipping team1-common (it IS the library chart)"
+              continue
+            fi
+
+            if [ ! -f "${chart_dir}Chart.yaml" ]; then
+              continue
+            fi
+
+            # Signal B: did this specific chart's Chart.yaml change in this push?
+            CHART_YAML_CHANGED=$(git diff HEAD~1 HEAD --name-only -- "${chart_dir}Chart.yaml" | wc -l)
+
+            if [ "$COMMON_CHANGED" -eq 0 ] && [ "$CHART_YAML_CHANGED" -eq 0 ]; then
+              echo ">>> Skipping ${chart_name} — no dependency-related changes detected"
+              continue
+            fi
+
+            echo ">>> Updating dependencies for: ${chart_name}"
+            helm dependency update "${chart_dir}"
+          done
+
+      - name: Commit and push updated chart dependencies
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add argocd/team1/charts/**/charts/
+          if git diff --cached --quiet; then
+            echo "No dependency changes to commit."
+          else
+            git commit -m "chore: helm dependency update [skip ci]"
+            git push
+          fi

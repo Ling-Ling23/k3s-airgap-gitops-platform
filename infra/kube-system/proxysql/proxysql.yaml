@@ -1,0 +1,194 @@
+---
+# ProxySQL — MariaDB proxy for automatic failover across ATL/LA clusters.
+#
+# Apps connect to:  proxysql.kube-system.svc.cluster.local:6033
+# Admin interface:  proxysql.kube-system.svc.cluster.local:6032  (mysql client)
+#
+# Per-cluster config (which MariaDB host is primary) lives in:
+#   env_config/proxysql_cfg_dev.yaml   (ATL — local primary)
+#   env_config/proxysql_cfg_test.yaml  (LA  — ATL NodePort as primary)
+#
+# To add a new database:
+#   1. Add a row to mysql_servers in the env ConfigMap
+#   2. Add a row to mysql_users in the env ConfigMap
+#   3. Restart proxysql pod (or use admin interface: INSERT INTO runtime_mysql_servers ...)
+#
+# Required secret (create once per cluster):
+#   kubectl create secret generic proxysql-secrets -n kube-system \
+#     --from-literal=admin_password='<choose-strong-password>' \
+#     --from-literal=monitor_password='<repl_admin secret value>'
+#
+# The monitor_password must match the 'proxysql_monitor'@'%' MariaDB user.
+# Create that user on each primary MariaDB once:
+#   CREATE USER IF NOT EXISTS 'proxysql_monitor'@'%' IDENTIFIED BY '<monitor_password>';
+#   GRANT REPLICATION CLIENT, PROCESS, SELECT ON *.* TO 'proxysql_monitor'@'%';
+#   FLUSH PRIVILEGES;
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: proxysql
+  namespace: kube-system
+  labels:
+    app: proxysql
+    app.kubernetes.io/name: proxysql
+    app.kubernetes.io/part-of: infrastructure
+    app.kubernetes.io/managed-by: kubectl
+    team: k3s-admin
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate   # ProxySQL has persistent state in /var/lib/proxysql — avoid split-brain
+  selector:
+    matchLabels:
+      app: proxysql
+  template:
+    metadata:
+      labels:
+        app: proxysql
+        app.kubernetes.io/name: proxysql
+        app.kubernetes.io/part-of: infrastructure
+        app.kubernetes.io/managed-by: kubectl
+        team: k3s-admin
+    spec:
+      initContainers:
+        # Substitute __ADMIN_PASS__ and __MONITOR_PASS__ placeholders with values
+        # from the proxysql-secrets Secret before ProxySQL starts.
+        - name: config-init
+          image: $ARTIFACTORY/busybox:latest
+          command:
+            - sh
+            - -c
+            - |
+              sed \
+                -e "s/__ADMIN_PASS__/${PROXYSQL_ADMIN_PASS}/g" \
+                -e "s/__MONITOR_PASS__/${PROXYSQL_MONITOR_PASS}/g" \
+                -e "s/__app5_PASS__/${app5_PASS}/g" \
+                -e "s/__app7_PASS__/${app7_PASS}/g" \
+                -e "s/__app1_PASS__/${app1_PASS}/g" \
+                -e "s/__app2_PASS__/${app2_PASS}/g" \
+                -e "s/__app4_PASS__/${app4_PASS}/g" \
+                -e "s/__app6_PASS__/${app6_PASS}/g" \
+                -e "s/__app8_PASS__/${app8_PASS}/g" \
+                /config-template/proxysql.cnf > /config/proxysql.cnf
+              echo "[init] proxysql.cnf rendered."
+          env:
+            - name: PROXYSQL_ADMIN_PASS
+              valueFrom:
+                secretKeyRef:
+                  name: proxysql-secrets
+                  key: admin_password
+            - name: PROXYSQL_MONITOR_PASS
+              valueFrom:
+                secretKeyRef:
+                  name: proxysql-secrets
+                  key: monitor_password
+            - name: app5_PASS
+              valueFrom:
+                secretKeyRef:
+                  name: proxysql-secrets
+                  key: app5-app-password
+            - name: app7_PASS
+              valueFrom:
+                secretKeyRef:
+                  name: proxysql-secrets
+                  key: app7-app-password
+            - name: app1_PASS
+              valueFrom:
+                secretKeyRef:
+                  name: proxysql-secrets
+                  key: app1-app-password
+            - name: app2_PASS
+              valueFrom:
+                secretKeyRef:
+                  name: proxysql-secrets
+                  key: app2-app-password
+            - name: app4_PASS
+              valueFrom:
+                secretKeyRef:
+                  name: proxysql-secrets
+                  key: app4-app-password
+            - name: app6_PASS
+              valueFrom:
+                secretKeyRef:
+                  name: proxysql-secrets
+                  key: app6-app-password
+            - name: app8_PASS
+              valueFrom:
+                secretKeyRef:
+                  name: proxysql-secrets
+                  key: app8-app-password
+          volumeMounts:
+            - name: config-template
+              mountPath: /config-template
+            - name: config-rendered
+              mountPath: /config
+
+      containers:
+        - name: proxysql
+          image: $ARTIFACTORY/proxysql/proxysql:3.0.7
+          command: ["/usr/bin/proxysql"]
+          args: ["-f", "--config", "/config/proxysql.cnf"]
+          ports:
+            - name: mysql
+              containerPort: 6033
+              protocol: TCP
+            - name: admin
+              containerPort: 6032
+              protocol: TCP
+          resources:
+            limits:
+              cpu: "1"
+              memory: 512Mi
+            requests:
+              cpu: 100m
+              memory: 128Mi
+          livenessProbe:
+            tcpSocket:
+              port: 6033
+            initialDelaySeconds: 15
+            periodSeconds: 10
+          readinessProbe:
+            tcpSocket:
+              port: 6033
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          volumeMounts:
+            - name: config-rendered
+              mountPath: /config
+            - name: datadir
+              mountPath: /var/lib/proxysql
+
+      volumes:
+        - name: config-template
+          configMap:
+            name: proxysql-config
+        - name: config-rendered
+          emptyDir: {}
+        - name: datadir
+          emptyDir: {}   # stateless — config-driven only; change to PVC if you want runtime changes persisted across restarts
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: proxysql
+  namespace: kube-system
+  labels:
+    app: proxysql
+    app.kubernetes.io/name: proxysql
+    app.kubernetes.io/part-of: infrastructure
+    app.kubernetes.io/managed-by: kubectl
+    team: k3s-admin
+spec:
+  type: ClusterIP
+  selector:
+    app: proxysql
+  ports:
+    - name: mysql
+      port: 6033
+      targetPort: 6033
+      protocol: TCP
+    - name: admin
+      port: 6032
+      targetPort: 6032
+      protocol: TCP

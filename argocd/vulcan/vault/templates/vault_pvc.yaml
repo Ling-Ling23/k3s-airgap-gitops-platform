@@ -1,0 +1,18 @@
+# PVC is managed by the StatefulSet volumeClaimTemplates (mongodata-mongodb-0).
+# This file is intentionally left empty.
+#kind: List
+#apiVersion: v1
+#items:
+#- apiVersion: v1
+#  kind: PersistentVolumeClaim
+#  metadata:
+#    name: vault-data-a
+#    namespace: {{ .Values.namespace }}
+#  spec:
+#    accessModes:
+#      - ReadWriteMany
+#    #persistentReclaimPolicy: Delete #Retain - set in PV
+#    resources:
+#      requests:
+#        storage: 5Gi
+#    storageClassName: longhorn

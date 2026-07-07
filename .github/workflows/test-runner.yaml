@@ -1,0 +1,15 @@
+# .github/workflows/test-runner.yml
+name: Test Self-Hosted Runner
+
+on:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: k3s-self-hosted
+    steps:
+      - name: Check environment
+        run: |
+          echo "Running on: $(hostname)"
+          echo "Kernel: $(uname -r)"
+          kubectl version --client || echo "kubectl not available"

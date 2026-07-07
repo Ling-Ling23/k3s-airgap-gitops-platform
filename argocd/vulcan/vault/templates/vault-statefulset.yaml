@@ -1,0 +1,101 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: vault
+  namespace: {{ .Values.namespace }}
+spec:
+  serviceName: "vault"
+  replicas: 1
+  selector:
+    matchLabels:
+      app: vault
+  template:
+    metadata:
+      labels:
+        app: vault
+    spec:
+      nodeSelector:
+        vault: "true"
+      securityContext:
+        fsGroup: 100
+      containers:
+      - name: vault
+        image: $ARTIFACTORY/$ARTIFACTORY_SUB_PATH/vault:latest
+        command: ["vault", "server", "-config=/vault/config/vault-cfg.hcl"]
+        #command: ["sh", "/vault/config/entrypoint.sh"]
+        ports:
+          - containerPort: 8220
+          - containerPort: 8221
+        env:
+          #- name: VAULT_ADDR
+          #  value: "https://$(HOSTNAME).vault.vulcan.svc.cluster.local:8220"
+          #- name: VAULT_CLUSTER_ADDR
+          #  value: "https://$(HOSTNAME).vault.vulcan.svc.cluster.local:8221"
+          - name: VAULT_CACERT
+            value: "/vault/config/tls.crt"
+          - name: VAULT_SKIP_VERIFY
+            value: "true"
+          - name: HOSTNAME
+            valueFrom:
+              fieldRef:
+                fieldPath: metadata.name
+          - name: NODE_NAME
+            valueFrom:
+              fieldRef:
+                fieldPath: spec.nodeName
+          #- name: VAULT_ADDR
+          #  value: ""
+          #- name: VAULT_CLUSTER_ADDR
+          #  value: ""
+        volumeMounts:
+          - name: vault-config
+            mountPath: /vault/config/vault-cfg.hcl
+            subPath: vault-cfg.hcl
+          - name: team1-certs-vault
+            mountPath: /vault/config/tls.crt
+            subPath: tls.crt
+          - name: team1-certs-vault
+            mountPath: /vault/config/tls.key
+            subPath: tls.key
+          - name: team1-certs-vault
+            mountPath: /vault/config/vault-ca.pem
+            subPath: ca.pem
+          #- name: team1-certs-vault
+          #  mountPath: /vault/config/infrateam.pem
+          #  subPath: infrateam.pem
+          - name: vault-data
+            mountPath: /vault/data
+          # Add your volume mounts here
+          # - name: vault-data
+          #   mountPath: /vault/data
+        resources:
+          limits:
+            memory: "2Gi"
+          requests:
+            memory: "256Mi"
+        securityContext:
+          runAsUser: 100
+          runAsGroup: 100
+          capabilities:
+            add: ["IPC_LOCK"]
+            drop: ["SKIP_SETCAP", "SKIP_CHOWN"]
+      volumes:
+        - name: vault-config
+          configMap:
+            name: vault-config
+        - name: team1-certs-vault
+          secret:
+            secretName: team1-certs
+        # Define your volumes here
+        # - name: vault-data
+        #   persistentVolumeClaim:
+        #     claimName: vault-pvc
+  volumeClaimTemplates:
+  - metadata:
+      name: vault-data
+    spec:
+      accessModes: ["ReadWriteOnce"]
+      resources:
+        requests:
+          storage: 6Gi
+      storageClassName: longhorn

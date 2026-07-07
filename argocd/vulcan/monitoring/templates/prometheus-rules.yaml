@@ -1,0 +1,177 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: prometheus-container-alerts
+  namespace: {{ .Values.namespace }}
+  labels:
+    app: prometheus
+    app.kubernetes.io/name: prometheus
+    app.kubernetes.io/part-of: {{ index .Values.labels "part-of" }}
+    app.kubernetes.io/managed-by: {{ index .Values.labels "managed-by" }}
+    environment: {{ .Values.labels.environment }}
+    team: {{ .Values.labels.team }}
+data:
+  container_alerts.yml: |
+    groups:
+    - name: container_alerts
+      rules:
+      - alert: ContainerRestarting
+        expr: delta(container_start_time_seconds{container!=""}[15m]) > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Container restarting ({{ "{{" }} $labels.container {{ "}}" }})"
+          description: "Container {{ "{{" }} $labels.container {{ "}}" }} has restarted in the last 15 minutes"
+
+      - alert: ContainerHighMemoryUsage
+        # container_spec_memory_limit_bytes is 0 when no memory limit is set on the
+        # container, which previously caused a division-by-zero (+Inf%) false alert.
+        # The "> 0" filter on the denominator excludes limitless containers from this
+        # ratio-based alert entirely (see ContainerHighMemoryUsageNoLimit below for those).
+        expr: (container_memory_working_set_bytes{container!=""} / (container_spec_memory_limit_bytes{container!=""} > 0) * 100) > 90
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Container high memory usage ({{ "{{" }} $labels.container {{ "}}" }})"
+          description: "Container {{ "{{" }} $labels.container {{ "}}" }} working set memory usage is {{ "{{" }} $value {{ "}}" }}%"
+
+      - alert: ContainerHighMemoryUsageNoLimit
+        # For containers with no memory limit set at all (spec limit == 0 - true
+        # only in namespaces with no LimitRange, e.g. kube-system), alert on an
+        # absolute working-set threshold instead of a % of limit.
+        expr: container_memory_working_set_bytes{container!=""} and on(namespace, pod, container) (container_spec_memory_limit_bytes{container!=""} == 0) > 2147483648
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Container high memory usage, no limit set ({{ "{{" }} $labels.container {{ "}}" }})"
+          description: "Container {{ "{{" }} $labels.container {{ "}}" }} has no memory limit and is using {{ "{{" }} $value | humanize1024 {{ "}}" }}B working set"
+
+      - alert: ContainerUsingDefaultMemoryLimit
+        # Once a LimitRange sets a `default` memory limit for a namespace, any
+        # container that doesn't declare its own resources.limits.memory gets
+        # that default value INJECTED into its spec at admission time - so
+        # container_spec_memory_limit_bytes is no longer 0 for it, and
+        # ContainerHighMemoryUsageNoLimit above stops seeing it.
+        # There's no cAdvisor metric that says "this limit was injected vs
+        # explicit", so this matches on the known default byte value per
+        # namespace instead (see infra/namespaces/resourcequota_and_limits.yaml
+        # for the LimitRange `default.memory` each value corresponds to).
+        # Informational only (severity: info) - not something to page on, just
+        # visibility into which containers are still relying on the namespace
+        # default instead of setting their own limit. Update the byte values
+        # below if you change any LimitRange's default.memory.
+        expr: |
+          (container_spec_memory_limit_bytes{namespace="team1"} == 1073741824)
+          or (container_spec_memory_limit_bytes{namespace="team3"} == 536870912)
+          or (container_spec_memory_limit_bytes{namespace="team2"} == 268435456)
+          or (container_spec_memory_limit_bytes{namespace="monitoring"} == 536870912)
+          or (container_spec_memory_limit_bytes{namespace="logging"} == 1073741824)
+          or (container_spec_memory_limit_bytes{namespace="argocd"} == 268435456)
+          or (container_spec_memory_limit_bytes{namespace="arc-systems"} == 268435456)
+          or (container_spec_memory_limit_bytes{namespace="arc-runners"} == 2147483648)
+        for: 15m
+        labels:
+          severity: info
+        annotations:
+          summary: "Container using namespace default memory limit ({{ "{{" }} $labels.container {{ "}}" }})"
+          description: "Container {{ "{{" }} $labels.container {{ "}}" }} in namespace {{ "{{" }} $labels.namespace {{ "}}" }} has no explicit memory limit - it inherited the namespace LimitRange default ({{ "{{" }} $value | humanize1024 {{ "}}" }}B). Add resources.limits.memory to its manifest if a different value is needed."
+
+      - alert: ContainerCPUThrottling
+        expr: rate(container_cpu_cfs_throttled_periods_total{container!=""}[5m]) / rate(container_cpu_cfs_periods_total{container!=""}[5m]) > 0.25
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Container CPU throttling ({{ "{{" }} $labels.container {{ "}}" }})"
+          description: "Container {{ "{{" }} $labels.container {{ "}}" }} is being throttled {{ "{{" }} $value | humanizePercentage {{ "}}" }}"
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: prometheus-node-alerts
+  namespace: {{ .Values.namespace }}
+data:
+  node_alerts.yml: |
+    groups:
+    - name: node_alerts
+      rules:
+      - alert: HighCPULoad
+        expr: 100 - (avg by(instance) (irate(node_cpu_seconds_total{mode="idle"}[5m])) * 100) > 80
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High CPU load (instance {{ "{{" }} $labels.instance {{ "}}" }})"
+          description: "CPU load is > 80%\n  VALUE = {{ "{{" }} $value {{ "}}" }}%\n  LABELS: {{ "{{" }} $labels {{ "}}" }}"
+      - alert: HighMemoryLoad
+        expr: (node_memory_MemTotal_bytes - node_memory_MemAvailable_bytes) / node_memory_MemTotal_bytes * 100 > 80
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High memory load (instance {{ "{{" }} $labels.instance {{ "}}" }})"
+          description: "Memory load is > 80%\n  VALUE = {{ "{{" }} $value {{ "}}" }}%\n  LABELS: {{ "{{" }} $labels {{ "}}" }}"
+      - alert: HighDiskUsage
+        expr: (node_filesystem_size_bytes{fstype=~"ext4|xfs"} - node_filesystem_free_bytes{fstype=~"ext4|xfs"}) / node_filesystem_size_bytes{fstype=~"ext4|xfs"} * 100 > 85
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High disk usage (instance {{ "{{" }} $labels.instance {{ "}}" }})"
+          description: "Disk usage is > 85%\n  VALUE = {{ "{{" }} $value {{ "}}" }}%\n  LABELS: {{ "{{" }} $labels {{ "}}" }}"
+      - alert: HighCPUUsage
+        expr: 100 - (avg by(instance) (irate(node_cpu_seconds_total{mode="idle"}[5m])) * 100) > 90
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "High CPU usage detected (instance {{ "{{" }} $labels.instance {{ "}}" }})"
+          description: "The CPU usage is above 90% for more than 1 minute on {{ "{{" }} $labels.instance {{ "}}" }}.\nVALUE = {{ "{{" }} $value {{ "}}" }}%\nLABELS: {{ "{{" }} $labels {{ "}}" }}"
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: prometheus-mysql-replication-alerts
+  namespace: {{ .Values.namespace }}
+  labels:
+    app: prometheus
+    app.kubernetes.io/name: prometheus
+    app.kubernetes.io/part-of: {{ index .Values.labels "part-of" }}
+    app.kubernetes.io/managed-by: {{ index .Values.labels "managed-by" }}
+    environment: {{ .Values.labels.environment }}
+    team: {{ .Values.labels.team }}
+data:
+  mysql_replication_alerts.yml: |
+    groups:
+    - name: mysql_replication_alerts
+      rules:
+      # Fired when the db-replication-check CronJob (see argocd/vulcan/db-replication-check)
+      # pushes mysql_replication_healthy=0 for a database. Covers BROKEN,
+      # UNREACHABLE and NO_SECRET only — see that chart's README for what each
+      # means. NO_REPLICA (a database with no replica configured, e.g. most
+      # app databases in this environment which are primary-only) is expected
+      # and does NOT set healthy=0, so it won't page here; check
+      # mysql_replication_configured==0 for visibility into which DBs those are.
+      # 'for: 15m' matches the check schedule so a single missed/slow run doesn't page.
+      - alert: MySQLReplicationUnhealthy
+        expr: mysql_replication_healthy == 0
+        for: 15m
+        labels:
+          severity: critical
+        annotations:
+          summary: "MySQL replication unhealthy ({{ "{{" }} $labels.db {{ "}}" }})"
+          description: "db-replication-check reports {{ "{{" }} $labels.db {{ "}}" }} (namespace {{ "{{" }} $labels.namespace {{ "}}" }}) as unhealthy. Check: kubectl logs -n {{ "{{" }} $labels.namespace {{ "}}" }} job/<latest db-replication-check job>"
+
+      # If Prometheus hasn't received a fresh push in over 30m, the CronJob itself
+      # may be failing to run/push (not just a broken DB) — alert on staleness too.
+      - alert: MySQLReplicationCheckStale
+        expr: time() - mysql_replication_last_push_timestamp_seconds > 1800
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "db-replication-check stale ({{ "{{" }} $labels.db {{ "}}" }})"
+          description: "No fresh metric push for {{ "{{" }} $labels.db {{ "}}" }} (namespace {{ "{{" }} $labels.namespace {{ "}}" }}) in over 30 minutes — the CronJob may not be running."

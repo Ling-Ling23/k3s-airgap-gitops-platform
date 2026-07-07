@@ -1,0 +1,10 @@
+apiVersion: secrets.hashicorp.com/v1beta1
+kind: VaultConnection
+metadata:
+  name: vault
+  namespace: arc-runners
+spec:
+  address: "https://$FQDN:8202" #8200
+  # Optional but common:
+  skipTLSVerify: true   # Skip TLS verification (not recommended for production)
+  # caCertSecretRef: vault-ca   # Secret containing ca.crt if using private CA

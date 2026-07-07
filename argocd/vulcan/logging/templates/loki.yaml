@@ -1,0 +1,54 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: loki
+  namespace: {{ .Values.namespace }}
+spec:
+  replicas: {{ default 1 .Values.loki.replicas }} # 3
+  strategy: # new
+    type: Recreate # new 
+  selector:
+    matchLabels:
+      app: loki
+  template:
+    metadata:
+      labels:
+        app: loki
+        app.kubernetes.io/name: loki
+        app.kubernetes.io/part-of: {{ index .Values.labels "part-of" }}
+        app.kubernetes.io/managed-by: {{ index .Values.labels "managed-by" }}
+        environment: {{ .Values.labels.environment }}
+        team: {{ .Values.labels.team }}
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "3100"
+    spec:
+      securityContext:
+        runAsUser: 1000
+        fsGroup: 1000
+      containers:
+      - name: loki
+        image: $ARTIFACTORY/att-dkr-public-group/grafana/loki:3.5.8
+        args:
+          - -config.file=/etc/loki/local-config.yaml
+          #- -target=distributor,ingester,querier,query-frontend
+        ports:
+          - containerPort: 3100
+          - containerPort: 7946
+        volumeMounts:
+          - name: loki-config
+            mountPath: /etc/loki/local-config.yaml
+            subPath: local-config.yaml
+          - name: loki-data
+            mountPath: /data
+          - name: loki-data
+            mountPath: /wal
+          - name: loki-data
+            mountPath: /var/loki
+      volumes:
+        - name: loki-config
+          configMap:
+            name: loki-config
+        - name: loki-data
+          persistentVolumeClaim:
+            claimName: loki-data

@@ -1,0 +1,39 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: vault
+  namespace: {{ .Values.namespace }}
+spec:
+  clusterIP: None
+  ports:
+    - port: 8220
+      targetPort: 8220
+      protocol: TCP
+      name: http
+    - port: 8221
+      targetPort: 8221
+      protocol: TCP
+      name: raft
+  selector:
+    app: vault
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: vault-nodeport
+  namespace: {{ .Values.namespace }}
+spec:
+  type: NodePort
+  ports:
+    - port: 8220
+      targetPort: 8220
+      nodePort: 30820   # pick a free port in 30000-32767
+      protocol: TCP
+      name: api
+    - port: 8221
+      targetPort: 8221
+      nodePort: 30821
+      protocol: TCP
+      name: raft
+  selector:
+    app: vault

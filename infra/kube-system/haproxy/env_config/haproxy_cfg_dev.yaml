@@ -1,0 +1,265 @@
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: haproxy-config
+  namespace: kube-system
+  labels:
+    app: haproxy
+    app.kubernetes.io/name: haproxy
+    app.kubernetes.io/part-of: infrastructure
+    app.kubernetes.io/managed-by: kubectl
+    team: k3s-admin
+data:
+  haproxy.cfg: |
+    global
+      log /dev/log local0 debug
+      #pidfile /var/run/haproxy.pid
+      tune.ssl.default-dh-param 2048
+
+      # disable sslv3, prefer modern ciphers
+      ssl-default-bind-options no-sslv3 no-tlsv10 no-tlsv11
+      ssl-default-bind-ciphers ECDH+AESGCM:DH+AESGCM:ECDH+AES256:DH+AES256:ECDH+AES128:DH+AES:RSA+AESGCM:RSA+AES:!aNULL:!MD5:!DSS
+
+      ssl-default-server-options no-sslv3 no-tlsv10 no-tlsv11
+      ssl-default-server-ciphers ECDH+AESGCM:DH+AESGCM:ECDH+AES256:DH+AES256:ECDH+AES128:DH+AES:RSA+AESGCM:RSA+AES:!aNULL:!MD5:!DSS
+
+    resolvers coredns
+      nameserver dns1 kube-dns.kube-system.svc.cluster.local:53
+      accepted_payload_size 8192
+      hold valid       10s
+      hold obsolete    30s
+      hold nx          30s
+      hold refused     30s
+      hold timeout     30s
+      hold other       30s
+      resolve_retries  3
+      timeout resolve  1s
+      timeout retry    1s
+
+    defaults
+      log     global
+      mode    http
+      balance roundrobin
+      default-server init-addr last,libc,none
+      #option  dontlognull
+      #option  dontlog-normal
+      maxconn 5000
+      timeout connect 15s
+      timeout client  30s
+      timeout server  900s
+      timeout queue   30s
+      timeout tunnel  3600s
+      timeout http-request 900s
+      timeout http-keep-alive 300s
+      stats enable
+      stats hide-version
+      stats refresh 30s
+      stats auth $TOOLING_ACCOUNT_ID:WouMC9ab!u
+      stats uri /khaproxy
+      #stats show-legends
+      #stats show-node
+      #stats show-desc
+
+    # ---- ArgoCD (TCP SSL passthrough) ----
+    frontend argocd-in
+      bind *:9443
+      mode tcp
+      option tcplog
+      default_backend argocd-backend
+
+    backend argocd-backend
+      mode tcp
+      option tcp-check
+      default-server inter 3s fall 3 rise 2
+      server argocd-server argocd-server.argocd.svc.cluster.local:443 check resolvers coredns resolve-prefer ipv4
+
+    # ---- Vault (dedicated port) ----
+    frontend vault-in
+      bind *:8220 ssl crt /usr/local/etc/haproxy/infrateam.pem
+      mode http
+      default_backend vault-backend
+
+    backend vault-backend
+      option tcp-check
+      server vault-0 vault-0.vault.kube-system.svc.cluster.local:8220 check inter 10s fall 3 rise 2 ssl verify none resolvers coredns resolve-prefer ipv4
+
+    # ---- MongoDB (TCP) ----
+    frontend mongodb-in
+      bind *:28017
+      mode tcp
+      option tcplog
+      default_backend mongodb-nodeport
+
+    backend mongodb-nodeport
+      mode tcp
+      balance roundrobin
+
+      # Basic TCP health check: just verifies the port is open.
+      option tcp-check
+      default-server inter 3s fall 3 rise 2
+
+      # Replace with your k8s node IPs and NodePort
+      server k8s-node-1 $IP_ADDR:30017 check
+      #server k8s-node-2 10.10.10.12:30017 check
+      #server k8s-node-3 10.10.10.13:30017 check
+
+    #frontend k3s_api
+    #    bind *:6443 ssl crt /usr/local/etc/haproxy/infrateam.pem
+    #    default_backend k3s_api_backend
+
+    #backend k3s_api_backend
+    #    server k3s_api_internal $IP_ADDR:6443 check ssl verify none
+
+    frontend http-in
+      bind *:443 ssl crt /usr/local/etc/haproxy/infrateam.pem ca-file /etc/ssl/certs/haloe-web-junction-cert-chain.pem verify optional
+      bind *:8443 ssl crt /usr/local/etc/haproxy/infrateam.pem
+      bind *:8202
+
+      log-format "%ci:%cp [%t] %ft %b/%s %ST %B %CC %CS %tsc %ac/%fc/%bc/%sc/%rc %sq/%bq ssl_c_s_dn(cn)=%[ssl_c_s_dn(cn)]"
+      http-request add-header X-Forwarded-Host %[req.hdr(host)]
+      http-request add-header X-Forwarded-Server %[req.hdr(host)]
+      http-request add-header X-Forwarded-Port %[dst_port]
+
+      default_backend longhorn-backend
+
+      acl grafana_path path_beg /grafana
+      acl grafana_path_noslash path -i /grafana
+      redirect location /grafana/ code 301 if grafana_path_noslash
+      use_backend grafana-backend if grafana_path
+
+      acl prometheus_path path_beg /prometheus
+      acl prometheus_path_noslash path -i /prometheus
+      redirect location /prometheus/ code 301 if prometheus_path_noslash
+      use_backend prometheus-backend if prometheus_path
+
+      acl app1_api_url path_sub /app1-tool-apis/ app1-tool-apis
+      use_backend app1_api_backend if app1_api_url
+
+      #acl app3_api_url path_sub /app3-tool-apis/ app3-tool-apis
+      #use_backend app3_api_backend if app3_api_url
+
+      acl app3_web_url path_beg /app3/ /app3
+      use_backend app3_web_backend if app3_web_url
+
+      acl app2_web_url path_beg /app2/ /app2
+      acl app2_api_url path_sub /app2-tool-apis/ app2-tool-apis
+      use_backend app2_web_backend if app2_web_url !app2_api_url
+      use_backend app2_api_backend if app2_api_url
+
+      acl app4_web_url path_beg /app4/ /app4
+      acl app4_api_url path_sub /app4-tool-apis/ app4-tool-apis
+      use_backend app4_web_backend if app4_web_url !app4_api_url
+      use_backend app4_api_backend if app4_api_url
+
+      acl app5_web_url path_beg /app5/ /app5
+      acl app5_api_url path_sub /app5-tool-apis/ app5-tool-apis
+      use_backend app5_web_backend if app5_web_url !app5_api_url
+      use_backend app5_api_backend if app5_api_url
+
+      acl app7_web_url path_beg /app7/ /app7
+      use_backend app7_web_backend if app7_web_url
+
+      acl app8_web_url path_beg /app8/ /app8
+      acl app8_api_url path_sub /app8-tool-apis/ app8-tool-apis
+      use_backend app8_web_backend if app8_web_url !app8_api_url
+      use_backend app8_api_backend if app8_api_url
+
+    backend prometheus-backend
+      option httpchk
+      http-check send meth GET uri /prometheus/api/v1/status/flags ver HTTP/1.1 hdr Host prometheus.monitoring.svc.cluster.local
+      http-check expect status 200
+      server prometheus prometheus.monitoring.svc.cluster.local:9090 check resolvers coredns resolve-prefer ipv4
+
+    backend grafana-backend
+      option httpchk
+      http-check send meth GET uri /api/health ver HTTP/1.1 hdr Host grafana.monitoring.svc.cluster.local
+      http-check expect status 200
+      http-request replace-path ^/grafana/?(.*)$ /\1
+      server grafana grafana.monitoring.svc.cluster.local:3000 check resolvers coredns resolve-prefer ipv4
+    
+    backend longhorn-backend
+      http-request replace-path ^/longhorn/?(.*)$ /\1
+      server longhorn longhorn-frontend.longhorn-system.svc.cluster.local:80 check resolvers coredns resolve-prefer ipv4
+
+    backend app1_api_backend
+      mode http
+      cookie PHPSESSID prefix nocache
+      cookie app1_api_backend insert indirect nocache
+      server app1-api app1-backend.team1.svc.cluster.local:80 check resolvers coredns resolve-prefer ipv4
+
+    backend app3_web_backend
+      mode http
+      cookie PHPSESSID prefix nocache
+      cookie app3_web_backend insert indirect nocache
+      server app3-frontend app3-frontend.team1.svc.cluster.local:80 check resolvers coredns resolve-prefer ipv4
+
+    backend app2_web_backend
+      mode http
+      cookie PHPSESSID prefix nocache
+      cookie app2_web_backend insert indirect nocache
+      server app2-frontend app2-frontend.team1.svc.cluster.local:80 check resolvers coredns resolve-prefer ipv4
+
+    backend app2_api_backend
+      mode http
+      cookie PHPSESSID prefix nocache
+      cookie app2_api_backend insert indirect nocache
+      server app2-api app2-backend.team1.svc.cluster.local:80 check resolvers coredns resolve-prefer ipv4
+
+    backend app4_web_backend
+      mode http
+      cookie PHPSESSID prefix nocache
+      cookie app4_web_backend insert indirect nocache
+      server app4-frontend app4-frontend.team1.svc.cluster.local:80 check resolvers coredns resolve-prefer ipv4
+
+    backend app4_api_backend
+      mode http
+      cookie PHPSESSID prefix nocache
+      cookie app4_api_backend insert indirect nocache
+      server app4-api app4-backend.team1.svc.cluster.local:80 check resolvers coredns resolve-prefer ipv4
+
+    backend app5_web_backend
+      mode http
+      cookie PHPSESSID prefix nocache
+      cookie app5_web_backend insert indirect nocache
+      server app5-frontend app5-frontend.team1.svc.cluster.local:80 check resolvers coredns resolve-prefer ipv4
+
+    backend app5_api_backend
+      mode http
+      cookie PHPSESSID prefix nocache
+      cookie app5_api_backend insert indirect nocache
+      server app5-api app5-backend.team1.svc.cluster.local:80 check resolvers coredns resolve-prefer ipv4
+
+    backend app7_web_backend
+      mode http
+      cookie PHPSESSID prefix nocache
+      cookie app7_web_backend insert indirect nocache
+      server app7-frontend app7-frontend.team2.svc.cluster.local:80 check resolvers coredns resolve-prefer ipv4
+
+    backend app8_web_backend
+      mode http
+      cookie PHPSESSID prefix nocache
+      cookie app8_web_backend insert indirect nocache
+      server app8-frontend app8-frontend.team1.svc.cluster.local:80 check resolvers coredns resolve-prefer ipv4
+
+    backend app8_api_backend
+      mode http
+      cookie PHPSESSID prefix nocache
+      cookie app8_api_backend insert indirect nocache
+      server app8-api app8-backend.team1.svc.cluster.local:80 check resolvers coredns resolve-prefer ipv4
+
+    # ---- ProxySQL — single entry point for all MariaDB databases ----
+    # External apps connect here instead of directly to MariaDB services.
+    # ProxySQL routes to the correct backend based on username/schema.
+    # In-cluster apps use proxysql.kube-system.svc.cluster.local:6033 directly.
+    frontend proxysql-in
+      bind *:6033
+      mode tcp
+      option tcplog
+      default_backend proxysql-backend
+
+    backend proxysql-backend
+      mode tcp
+      option tcp-check
+      default-server inter 3s fall 3 rise 2 init-addr none
+      server proxysql proxysql.kube-system.svc.cluster.local:6033 check resolvers coredns resolve-prefer ipv4

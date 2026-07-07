@@ -1,0 +1,6 @@
+config:
+  projectGitBranch: "develop"
+alertmanager:
+  flask-api-url: "https://$NODE_2.dev..com:8443/app1-tool-apis/alertmanager_api"
+labels:
+  environment: dev

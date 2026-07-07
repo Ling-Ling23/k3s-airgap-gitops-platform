@@ -1,0 +1,26 @@
+namespace: team2
+backend:
+  enabled: false
+frontend:
+  enabled: true
+database:
+  enabled: true
+  nodePort: 30083
+  vault_root_secret_name: team2-database-roots
+image:
+  repository: $ARTIFACTORY/$ARTIFACTORY_SUB_PATH/infrateam-lapw
+  tag: ubuntu20.04
+  pullPolicy: IfNotPresent
+config:
+  appName: app7
+  k3sAppName: app7
+labels:
+  team: team2
+  managed-by: argocd
+  part-of: team2-apps
+global:
+  srcRevision: "unknown"
+gitSync:
+  enabled: true
+  schedule: "*/2 * * * *"
+  $APP_SOME_GH_REPOSITORY-app7.git

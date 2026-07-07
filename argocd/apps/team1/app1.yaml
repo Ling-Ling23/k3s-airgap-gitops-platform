@@ -1,0 +1,60 @@
+apiVersion: argoproj.io/v1alpha1
+kind: ApplicationSet
+metadata:
+  name: app1
+  namespace: argocd
+  labels:
+    team: k3s-admin
+    app.kubernetes.io/name: app1
+    app.kubernetes.io/managed-by: argocd
+    app.kubernetes.io/part-of: team1
+  annotations:
+    #argocd.argoproj.io/sync-wave: "0"
+    description: "ApplicationSet for app1 deployment"
+spec:
+  generators:
+  - clusters:
+      selector:
+        matchExpressions:
+        - key: env
+          operator: In
+          values: [dev, test ,prod]
+  template:
+    metadata:
+      name: "app1-{{metadata.labels.env}}"
+      namespace: argocd
+      labels:
+        app.kubernetes.io/name: app1
+        app.kubernetes.io/instance: "app1-{{metadata.labels.env}}"
+        app.kubernetes.io/managed-by: argocd
+        app.kubernetes.io/part-of: team1
+        environment: "{{metadata.labels.env}}"
+      finalizers:
+        - resources-finalizer.argocd.argoproj.io
+    spec:
+      project: apps
+      sources:
+        # Source 1: watch python source code repo — commit SHA injected as helm param
+        - $APP_SOME_GH_REPOSITORY-app1.git
+          targetRevision: "{{metadata.labels.appGitBranch}}"
+          ref: app1Src
+        # Source 2: helm chart from infra repo
+        - $APP_SOME_GH_REPOSITORY-k3s_deployment.git
+          targetRevision: "{{metadata.labels.env}}"
+          path: argocd/team1/charts/app1
+          helm:
+            valueFiles:
+              - values/common.yaml
+              - "values/{{metadata.labels.env}}.yaml"
+            parameters:
+              - name: global.srcRevision
+                value: $app1Src
+      destination:
+        server: "{{server}}"
+        namespace: team1
+      syncPolicy:
+        automated:
+          prune: true
+          selfHeal: true
+        syncOptions:
+          - CreateNamespace=true

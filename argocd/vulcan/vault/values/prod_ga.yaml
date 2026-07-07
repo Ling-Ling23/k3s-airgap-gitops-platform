@@ -1,0 +1,7 @@
+config:
+  projectGitBranch: "master"
+vault-cfg:
+  NODE_ID: $NODE_8.web..com
+  NODE_VAULT_PEER1: $NODE_3.dev..com
+  NODE_VAULT_PEER2: $NODE_7.web..com
+  NODE_VAULT_PEER3: $NODE_6.test..com

@@ -1,0 +1,17 @@
+apiVersion: v1
+kind: Service
+metadata:
+  labels:
+    app: dbtwo-database
+  name: dbtwo-mariadb-nodeport
+  namespace: team1
+spec:
+  type: NodePort
+  ports:
+    - name: mysql
+      port: 3306
+      protocol: TCP
+      targetPort: 3306
+      nodePort: 30337   # dbone uses 30336, dbtwo uses 30337
+  selector:
+    app: dbtwo-data

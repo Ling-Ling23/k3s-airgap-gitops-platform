@@ -1,0 +1,9 @@
+{{ include "team1-common.configmap" . }}
+---
+{{ include "team1-common.git-sync-cronjob" . }}
+---
+{{ include "team1-common.frontend.deployment" . }}
+---
+{{ include "team1-common.frontend.pvc" . }}
+---
+{{ include "team1-common.frontend.service" . }}

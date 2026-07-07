@@ -1,0 +1,133 @@
+# CronJob that detects ImagePullBackOff on svclb-haproxy pods and re-patches
+# all lb-tcp-* containers to the correct internal registry image.
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: svclb-image-patcher
+  namespace: kube-system
+  labels:
+    app.kubernetes.io/name: svclb-image-patcher
+    app.kubernetes.io/part-of: infrastructure
+    app.kubernetes.io/managed-by: kubectl
+    team: k3s-admin
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: svclb-image-patcher
+  namespace: kube-system
+  labels:
+    app.kubernetes.io/name: svclb-image-patcher
+    app.kubernetes.io/part-of: infrastructure
+    app.kubernetes.io/managed-by: kubectl
+    team: k3s-admin
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "patch", "delete"]
+  - apiGroups: ["apps"]
+    resources: ["daemonsets"]
+    verbs: ["get", "list", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: svclb-image-patcher
+  namespace: kube-system
+  labels:
+    app.kubernetes.io/name: svclb-image-patcher
+    app.kubernetes.io/part-of: infrastructure
+    app.kubernetes.io/managed-by: kubectl
+    team: k3s-admin
+subjects:
+  - kind: ServiceAccount
+    name: svclb-image-patcher
+    namespace: kube-system
+roleRef:
+  kind: Role
+  name: svclb-image-patcher
+  apiGroup: rbac.authorization.k8s.io
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: svclb-image-patcher
+  namespace: kube-system
+  labels:
+    app.kubernetes.io/name: svclb-image-patcher
+    app.kubernetes.io/part-of: infrastructure
+    app.kubernetes.io/managed-by: kubectl
+    team: k3s-admin
+spec:
+  schedule: "*/3 * * * *"          # runs every 3 minutes
+  concurrencyPolicy: Forbid         # skip if previous job still running
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          serviceAccountName: svclb-image-patcher
+          restartPolicy: OnFailure
+          containers:
+            - name: patcher
+              image: $ARTIFACTORY/att-dkr-public-group/bitnami/kubectl:latest
+              command:
+                - /bin/sh
+                - -c
+                - |
+                  IMAGE="$ARTIFACTORY/rancher/klipper-lb:v0.4.13"
+
+                  # Static well-known ports
+                  CONTAINERS="lb-tcp-443 lb-tcp-8443 lb-tcp-8220 lb-tcp-9443 lb-tcp-28017 lb-tcp-6033"
+
+                  # MariaDB ports 3336-3436 (covers current 3381, 3382 and all future additions)
+                  for p in $(seq 3336 3436); do
+                    CONTAINERS="$CONTAINERS lb-tcp-$p"
+                  done
+
+                  # ── Step 1: Find the DaemonSet(s) that manage svclb-haproxy pods ──────────
+                  # Patching the DaemonSet ensures ALL current + future pods use the right image.
+                  # A direct pod patch gets reverted by the DaemonSet controller.
+                  DS_LIST=$(kubectl -n kube-system get daemonsets --no-headers \
+                    -o custom-columns=NAME:.metadata.name \
+                    | grep '^svclb-haproxy')
+
+                  if [ -z "$DS_LIST" ]; then
+                    echo "No svclb-haproxy DaemonSet found. Exiting."
+                    exit 0
+                  fi
+
+                  for DS in $DS_LIST; do
+                    echo "==> Patching DaemonSet: $DS"
+                    for CONTAINER in $CONTAINERS; do
+                      kubectl -n kube-system set image "daemonset/$DS" \
+                        "$CONTAINER=$IMAGE" 2>/dev/null \
+                        && echo "    patched $CONTAINER on DS/$DS" \
+                        || echo "    $CONTAINER not in DS/$DS (skipped)"
+                    done
+                  done
+
+                  # ── Step 2: Delete pods still in ImagePullBackOff or ErrImagePull ─────────
+                  # DaemonSet controller will immediately recreate them from the patched spec,
+                  # bypassing the kubelet's exponential backoff timer.
+                  PODS=$(kubectl -n kube-system get pods --no-headers \
+                    -o custom-columns=NAME:.metadata.name \
+                    | grep '^svclb-haproxy')
+
+                  for POD in $PODS; do
+                    REASONS=$(kubectl -n kube-system get pod "$POD" \
+                      -o jsonpath='{.status.containerStatuses[*].state.waiting.reason}' 2>/dev/null)
+
+                    echo "Pod: $POD  |  waiting reasons: ${REASONS:-none}"
+
+                    if echo "$REASONS" | grep -qE "ImagePullBackOff|ErrImagePull"; then
+                      echo "    ==> Deleting stuck pod $POD so DaemonSet recreates it cleanly ..."
+                      kubectl -n kube-system delete pod "$POD" --grace-period=0 \
+                        && echo "    deleted $POD" \
+                        || echo "    could not delete $POD (skipped)"
+                    fi
+                  done
+
+                  echo "Done."

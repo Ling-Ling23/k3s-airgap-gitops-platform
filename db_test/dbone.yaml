@@ -1,0 +1,106 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  annotations:
+    argocd.argoproj.io/tracking-id: dbone-dev:apps/StatefulSet:team1/dbone-data
+  labels:
+    app: dbone-database
+    app.kubernetes.io/name: dbone
+    environment: dev
+    team: team1
+  name: dbone-data
+  namespace: team1
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: dbone-data
+  serviceName: dbone-mariadb
+  template:
+    metadata:
+      labels:
+        app: dbone-data
+        app.kubernetes.io/name: dbone
+        environment: dev
+        team: team1
+    spec:
+      containers:
+        - env:
+            - name: MYSQL_ROOT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  key: dbone
+                  name: team1-database-roots
+            - name: MYSQL_DATABASE
+              value: dbone
+          image: $ARTIFACTORY/mariadb:11.8.5
+          name: dbone-data
+          ports:
+            - containerPort: 3306
+              name: mysql
+              protocol: TCP
+          resources:
+            limits:
+              cpu: '2'
+              memory: 2G
+            requests:
+              cpu: '0.5'
+              memory: 512Mi
+          volumeMounts:
+            - mountPath: /var/lib/mysql
+              name: mariadb-data
+      hostname: dbone-dev-ga
+      initContainers:
+        - command:
+            - rm
+            - '-rf'
+            - /var/lib/mysql/lost+found
+          image: >-
+            $ARTIFACTORY/busybox:latest
+          name: cleanup-lost-found
+          resources:
+            limits:
+              cpu: 100m
+              memory: 64Mi
+            requests:
+              cpu: 50m
+              memory: 32Mi
+          volumeMounts:
+            - mountPath: /var/lib/mysql
+              name: mariadb-data
+        - command:
+            - sh
+            - '-c'
+            - |
+              mkdir -p /run/mysqld
+              chown mysql:mysql /run/mysqld
+              chmod 755 /run/mysqld
+          image: $ARTIFACTORY/mariadb:11.8.5
+          name: fix-mysqld-run-dir
+          resources:
+            limits:
+              cpu: 100m
+              memory: 64Mi
+            requests:
+              cpu: 50m
+              memory: 32Mi
+          securityContext:
+            runAsUser: 0
+          volumeMounts:
+            - mountPath: /run/mysqld
+              name: mariadb-run
+      volumes:
+        - emptyDir: {}
+          name: mariadb-run
+  volumeClaimTemplates:
+    - metadata:
+        labels:
+          app: dbone-database
+        name: mariadb-data
+      spec:
+        accessModes:
+          - ReadWriteOnce
+        resources:
+          requests:
+            storage: 150Gi
+        storageClassName: longhorn

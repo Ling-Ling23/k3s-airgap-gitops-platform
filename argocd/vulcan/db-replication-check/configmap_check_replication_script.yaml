@@ -1,0 +1,262 @@
+# Shared script used by both CronJobs below (team1 and team2 namespaces).
+# Reuses the same mariadb:11.8.5 image already pulled on every node for the
+# StatefulSets, so no custom image build is required.
+#
+# For each target "name=secretkey" pair in DB_TARGETS:
+#   - Connects to <name>-data-0.<name>-mariadb.<NAMESPACE>.svc.cluster.local:3306
+#     (in-cluster headless service DNS — same convention used by the StatefulSets
+#     and replication setup script, see docs/replication_setup.md)
+#   - Reads the root password from the mounted Secret file /secrets/<secretkey>
+#     (secret is mounted as a volume, not individual env vars, so this script
+#     works for any number of DBs without editing the CronJob spec)
+#   - Runs SHOW MASTER STATUS and SHOW SLAVE STATUS
+#   - Prints one grep-able "STATUS ..." line per database
+#
+# Exit code is non-zero if any database is UNREACHABLE, missing its secret, or
+# has broken replication (Slave_IO_Running/Slave_SQL_Running != Yes) — so
+# `kubectl get jobs` / `kubectl get cronjob` surfaces failures, and a future
+# notifier script can simply grep the job logs for `result=BROKEN` etc.
+# NO_REPLICA (this node isn't configured as anyone's replica) does NOT fail
+# the job — it's a normal state for primary-only nodes in this environment
+# (most app databases here don't have a second replication peer configured yet).
+#
+# Also pushes metrics to the Prometheus Pushgateway (argocd/vulcan/monitoring/
+# templates/pushgateway.yaml) so Alertmanager can fire on real replication
+# failures — see MySQLReplicationUnhealthy / MySQLReplicationCheckStale in
+# prometheus-rules.yaml:
+#   mysql_replication_healthy    1 unless BROKEN/UNREACHABLE/NO_SECRET (0)
+#   mysql_replication_configured 1 if SHOW SLAVE STATUS returned a row, 0 if
+#                                NO_REPLICA — informational only, not alerted on
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: db-replication-check-script
+  namespace: team1
+  labels:
+    app: db-replication-check
+data:
+  check-replication.sh: |
+    #!/bin/bash
+    set -uo pipefail
+
+    : "${NAMESPACE:?NAMESPACE env var not set}"
+    : "${DB_TARGETS:?DB_TARGETS env var not set (format: name=secretkey,name2=secretkey2,...)}"
+    SECRET_DIR="${SECRET_DIR:-/secrets}"
+    PUSHGATEWAY_URL="${PUSHGATEWAY_URL:-http://prometheus-pushgateway.monitoring.svc.cluster.local:9091}"
+
+    FAIL=0
+
+    # Pushes metrics for one database using bash's built-in /dev/tcp — the
+    # mariadb:11.8.5 image doesn't include curl or wget, so this avoids
+    # needing a custom image just to reach the Pushgateway. Parses
+    # PUSHGATEWAY_URL (scheme://host:port) into host/port once per call.
+    # The grouping key (job/namespace/db in the URL path) becomes Prometheus
+    # labels {job="db_replication_check", namespace="...", db="..."}
+    # automatically — no need to repeat them in the metric lines below.
+    # Wrapped in 'timeout' so a Pushgateway outage never hangs the CronJob.
+    #
+    # NOTE: body/req are built with printf -v (not $(...) command substitution)
+    # because command substitution strips trailing newlines. The Prometheus
+    # text exposition format requires the final metric line to end in \n —
+    # Pushgateway returns 400 and silently drops the whole push without it.
+    push_metric() {
+      local db="$1" healthy="$2" lag="${3:-0}" configured="${4:-1}"
+      # Lag must always be numeric for a Prometheus gauge — MariaDB reports
+      # Seconds_Behind_Master as NULL/empty when the IO thread isn't running.
+      [[ "$lag" =~ ^[0-9]+$ ]] || lag=0
+      local hostport="${PUSHGATEWAY_URL#*://}"
+      local pg_host="${hostport%%:*}"
+      local pg_port="${hostport##*:}"; pg_port="${pg_port%%/*}"
+      local path="/metrics/job/db_replication_check/namespace/${NAMESPACE}/db/${db}"
+      local body req resp status
+      printf -v body 'mysql_replication_healthy %s\nmysql_replication_configured %s\nmysql_replication_seconds_behind %s\nmysql_replication_last_push_timestamp_seconds %s\n' \
+        "$healthy" "$configured" "$lag" "$(date +%s)"
+      printf -v req 'POST %s HTTP/1.1\r\nHost: %s\r\nContent-Type: text/plain\r\nContent-Length: %s\r\nConnection: close\r\n\r\n%s' \
+        "$path" "$pg_host" "${#body}" "$body"
+      resp=$(PG_HOST="$pg_host" PG_PORT="$pg_port" PG_REQ="$req" timeout 5 bash -c '
+        exec 3<>"/dev/tcp/${PG_HOST}/${PG_PORT}" || exit 1
+        printf "%s" "$PG_REQ" >&3
+        cat <&3
+      ' 2>&1)
+      status=$(echo "$resp" | head -n1)
+      if [[ "$status" != *" 200 "* ]]; then
+        echo "WARN: push_metric failed for db=${db}: ${status:-connection to ${pg_host}:${pg_port} failed}" >&2
+      fi
+    }
+
+    IFS=',' read -ra PAIRS <<< "${DB_TARGETS}"
+    for pair in "${PAIRS[@]}"; do
+      # Trim leading/trailing whitespace defensively — YAML folded scalars
+      # or manual edits can introduce stray spaces after commas/newlines,
+      # which would otherwise break DNS resolution of the host below.
+      pair="$(echo "$pair" | xargs)"
+      name="${pair%%=*}"
+      secretkey="${pair##*=}"
+      name="$(echo "$name" | xargs)"
+      secretkey="$(echo "$secretkey" | xargs)"
+      host="${name}-data-0.${name}-mariadb.${NAMESPACE}.svc.cluster.local"
+      pass_file="${SECRET_DIR}/${secretkey}"
+
+      if [ ! -f "$pass_file" ]; then
+        echo "STATUS name=${name} result=NO_SECRET detail=\"missing key '${secretkey}' in mounted secret\""
+        push_metric "$name" 0 0 0
+        FAIL=1
+        continue
+      fi
+      PASS="$(cat "$pass_file")"
+
+      MASTER_OUT=$(mariadb -h"${host}" -uroot -p"${PASS}" --connect-timeout=5 -e "SHOW MASTER STATUS\G" 2>&1)
+      if [ $? -ne 0 ]; then
+        echo "STATUS name=${name} result=UNREACHABLE detail=\"${MASTER_OUT//$'\n'/ }\""
+        push_metric "$name" 0 0 0
+        FAIL=1
+        continue
+      fi
+      MASTER_FILE=$(echo "$MASTER_OUT" | awk -F': ' '/^ *File:/{print $2}')
+      MASTER_POS=$(echo "$MASTER_OUT" | awk -F': ' '/^ *Position:/{print $2}')
+
+      SLAVE_OUT=$(mariadb -h"${host}" -uroot -p"${PASS}" --connect-timeout=5 -e "SHOW SLAVE STATUS\G" 2>&1)
+      if [ -z "$(echo "$SLAVE_OUT" | tr -d '[:space:]')" ]; then
+        echo "STATUS name=${name} result=NO_REPLICA master_log=${MASTER_FILE:-NA}:${MASTER_POS:-NA}"
+        # Primary-only node — expected state, not a failure. healthy=1 so this
+        # never fires MySQLReplicationUnhealthy; configured=0 flags it as
+        # informational (no replica currently set up).
+        push_metric "$name" 1 0 0
+        continue
+      fi
+
+      IO=$(echo "$SLAVE_OUT" | awk -F': ' '/Slave_IO_Running:/{print $2}')
+      SQL=$(echo "$SLAVE_OUT" | awk -F': ' '/Slave_SQL_Running:/{print $2}')
+      LAG=$(echo "$SLAVE_OUT" | awk -F': ' '/Seconds_Behind_Master:/{print $2}')
+      ERR=$(echo "$SLAVE_OUT" | awk -F': ' '/Last_Error:/{print $2}')
+
+      RESULT="OK"
+      HEALTHY=1
+      if [ "$IO" != "Yes" ] || [ "$SQL" != "Yes" ]; then
+        RESULT="BROKEN"
+        HEALTHY=0
+        FAIL=1
+      fi
+
+      echo "STATUS name=${name} result=${RESULT} slave_io=${IO:-NA} slave_sql=${SQL:-NA} seconds_behind=${LAG:-NA} master_log=${MASTER_FILE:-NA}:${MASTER_POS:-NA} last_error=\"${ERR:-}\""
+      push_metric "$name" "$HEALTHY" "${LAG:-0}" 1
+    done
+
+    exit $FAIL
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: db-replication-check-script
+  namespace: team2
+  labels:
+    app: db-replication-check
+data:
+  check-replication.sh: |
+    #!/bin/bash
+    set -uo pipefail
+
+    : "${NAMESPACE:?NAMESPACE env var not set}"
+    : "${DB_TARGETS:?DB_TARGETS env var not set (format: name=secretkey,name2=secretkey2,...)}"
+    SECRET_DIR="${SECRET_DIR:-/secrets}"
+    PUSHGATEWAY_URL="${PUSHGATEWAY_URL:-http://prometheus-pushgateway.monitoring.svc.cluster.local:9091}"
+
+    FAIL=0
+
+    # Pushes metrics for one database using bash's built-in /dev/tcp — the
+    # mariadb:11.8.5 image doesn't include curl or wget, so this avoids
+    # needing a custom image just to reach the Pushgateway. Parses
+    # PUSHGATEWAY_URL (scheme://host:port) into host/port once per call.
+    # The grouping key (job/namespace/db in the URL path) becomes Prometheus
+    # labels {job="db_replication_check", namespace="...", db="..."}
+    # automatically — no need to repeat them in the metric lines below.
+    # Wrapped in 'timeout' so a Pushgateway outage never hangs the CronJob.
+    #
+    # NOTE: body/req are built with printf -v (not $(...) command substitution)
+    # because command substitution strips trailing newlines. The Prometheus
+    # text exposition format requires the final metric line to end in \n —
+    # Pushgateway returns 400 and silently drops the whole push without it.
+    push_metric() {
+      local db="$1" healthy="$2" lag="${3:-0}" configured="${4:-1}"
+      # Lag must always be numeric for a Prometheus gauge — MariaDB reports
+      # Seconds_Behind_Master as NULL/empty when the IO thread isn't running.
+      [[ "$lag" =~ ^[0-9]+$ ]] || lag=0
+      local hostport="${PUSHGATEWAY_URL#*://}"
+      local pg_host="${hostport%%:*}"
+      local pg_port="${hostport##*:}"; pg_port="${pg_port%%/*}"
+      local path="/metrics/job/db_replication_check/namespace/${NAMESPACE}/db/${db}"
+      local body req resp status
+      printf -v body 'mysql_replication_healthy %s\nmysql_replication_configured %s\nmysql_replication_seconds_behind %s\nmysql_replication_last_push_timestamp_seconds %s\n' \
+        "$healthy" "$configured" "$lag" "$(date +%s)"
+      printf -v req 'POST %s HTTP/1.1\r\nHost: %s\r\nContent-Type: text/plain\r\nContent-Length: %s\r\nConnection: close\r\n\r\n%s' \
+        "$path" "$pg_host" "${#body}" "$body"
+      resp=$(PG_HOST="$pg_host" PG_PORT="$pg_port" PG_REQ="$req" timeout 5 bash -c '
+        exec 3<>"/dev/tcp/${PG_HOST}/${PG_PORT}" || exit 1
+        printf "%s" "$PG_REQ" >&3
+        cat <&3
+      ' 2>&1)
+      status=$(echo "$resp" | head -n1)
+      if [[ "$status" != *" 200 "* ]]; then
+        echo "WARN: push_metric failed for db=${db}: ${status:-connection to ${pg_host}:${pg_port} failed}" >&2
+      fi
+    }
+
+    IFS=',' read -ra PAIRS <<< "${DB_TARGETS}"
+    for pair in "${PAIRS[@]}"; do
+      # Trim leading/trailing whitespace defensively — YAML folded scalars
+      # or manual edits can introduce stray spaces after commas/newlines,
+      # which would otherwise break DNS resolution of the host below.
+      pair="$(echo "$pair" | xargs)"
+      name="${pair%%=*}"
+      secretkey="${pair##*=}"
+      name="$(echo "$name" | xargs)"
+      secretkey="$(echo "$secretkey" | xargs)"
+      host="${name}-data-0.${name}-mariadb.${NAMESPACE}.svc.cluster.local"
+      pass_file="${SECRET_DIR}/${secretkey}"
+
+      if [ ! -f "$pass_file" ]; then
+        echo "STATUS name=${name} result=NO_SECRET detail=\"missing key '${secretkey}' in mounted secret\""
+        push_metric "$name" 0 0 0
+        FAIL=1
+        continue
+      fi
+      PASS="$(cat "$pass_file")"
+
+      MASTER_OUT=$(mariadb -h"${host}" -uroot -p"${PASS}" --connect-timeout=5 -e "SHOW MASTER STATUS\G" 2>&1)
+      if [ $? -ne 0 ]; then
+        echo "STATUS name=${name} result=UNREACHABLE detail=\"${MASTER_OUT//$'\n'/ }\""
+        push_metric "$name" 0 0 0
+        FAIL=1
+        continue
+      fi
+      MASTER_FILE=$(echo "$MASTER_OUT" | awk -F': ' '/^ *File:/{print $2}')
+      MASTER_POS=$(echo "$MASTER_OUT" | awk -F': ' '/^ *Position:/{print $2}')
+
+      SLAVE_OUT=$(mariadb -h"${host}" -uroot -p"${PASS}" --connect-timeout=5 -e "SHOW SLAVE STATUS\G" 2>&1)
+      if [ -z "$(echo "$SLAVE_OUT" | tr -d '[:space:]')" ]; then
+        echo "STATUS name=${name} result=NO_REPLICA master_log=${MASTER_FILE:-NA}:${MASTER_POS:-NA}"
+        # Primary-only node — expected state, not a failure. healthy=1 so this
+        # never fires MySQLReplicationUnhealthy; configured=0 flags it as
+        # informational (no replica currently set up).
+        push_metric "$name" 1 0 0
+        continue
+      fi
+
+      IO=$(echo "$SLAVE_OUT" | awk -F': ' '/Slave_IO_Running:/{print $2}')
+      SQL=$(echo "$SLAVE_OUT" | awk -F': ' '/Slave_SQL_Running:/{print $2}')
+      LAG=$(echo "$SLAVE_OUT" | awk -F': ' '/Seconds_Behind_Master:/{print $2}')
+      ERR=$(echo "$SLAVE_OUT" | awk -F': ' '/Last_Error:/{print $2}')
+
+      RESULT="OK"
+      HEALTHY=1
+      if [ "$IO" != "Yes" ] || [ "$SQL" != "Yes" ]; then
+        RESULT="BROKEN"
+        HEALTHY=0
+        FAIL=1
+      fi
+
+      echo "STATUS name=${name} result=${RESULT} slave_io=${IO:-NA} slave_sql=${SQL:-NA} seconds_behind=${LAG:-NA} master_log=${MASTER_FILE:-NA}:${MASTER_POS:-NA} last_error=\"${ERR:-}\""
+      push_metric "$name" "$HEALTHY" "${LAG:-0}" 1
+    done
+
+    exit $FAIL

@@ -1,0 +1,52 @@
+apiVersion: argoproj.io/v1alpha1
+kind: ApplicationSet
+metadata:
+  name: logging
+  namespace: argocd
+  labels:
+    team: k3s-admin
+    app.kubernetes.io/name: logging
+    app.kubernetes.io/managed-by: argocd
+    app.kubernetes.io/part-of: vulcan
+  annotations:
+    #argocd.argoproj.io/sync-wave: "0"
+    description: "ApplicationSet for logging stack"
+spec:
+  generators:
+  - clusters:
+      selector:
+        matchExpressions:
+        - key: env
+          operator: In
+          values: [test, dev, prod]
+  template:
+    metadata:
+      name: "logging-{{metadata.labels.env}}"
+      namespace: argocd
+      labels:
+        app.kubernetes.io/name: logging
+        app.kubernetes.io/instance: "logging-{{metadata.labels.env}}"
+        app.kubernetes.io/managed-by: argocd
+        app.kubernetes.io/part-of: vulcan
+        environment: "{{metadata.labels.env}}"
+      finalizers:
+        - resources-finalizer.argocd.argoproj.io
+    spec:
+      project: infra
+      source:
+        $APP_SOME_GH_REPOSITORY-k3s_deployment.git
+        targetRevision: "{{metadata.labels.env}}"
+        path: argocd/vulcan/logging
+        helm:
+          valueFiles:
+            - values/common.yaml
+            - "values/{{metadata.labels.env}}.yaml"
+      destination:
+        server: "{{server}}"
+        namespace: logging
+      syncPolicy:
+        automated:
+          prune: true
+          selfHeal: true
+        syncOptions:
+          - CreateNamespace=true

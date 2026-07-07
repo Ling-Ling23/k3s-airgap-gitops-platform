@@ -1,0 +1,30 @@
+replicaCount: 1
+resources:
+  limits:
+    cpu: 0.5
+    memory: 2G
+  requests:
+    cpu: 0.01
+    memory: 256Mi
+    storage: 20Gi
+config:
+  projectGitBranch: "develop"
+hostname: app3-dev-ga
+labels:
+  environment: dev
+database:
+  resources:
+    limits:
+      cpu: 2
+      memory: 2G
+    requests:
+      cpu: 0.5
+      memory: 512Mi
+      storage: 150Gi
+  replHost: "haproxy.kube-system.svc.cluster.local"    # remote master host — see _db_configmap_repl_env.tpl comments
+  replPort: 3336   # ?? remote master port (HAProxy port or NodePort) - it is the same port on both - use value nodePort from common or specific for haproxy ?????
+  replication:
+    serverId: 1               # must be unique per cluster (1=ATL/primary, 2=LA/standby)
+    gtidDomainId: 1           # must match serverId cluster (1=ATL, 2=LA)
+    autoIncrementOffset: 1    # 1=odd rows (ATL), 2=even rows (LA)
+    readOnly: "OFF"           # OFF for primary (ATL), ON for standby (LA)

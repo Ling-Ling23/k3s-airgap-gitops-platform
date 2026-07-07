@@ -1,0 +1,50 @@
+apiVersion: argoproj.io/v1alpha1
+kind: ApplicationSet
+metadata:
+  name: team1-shared-data-apps
+  namespace: argocd
+  labels:
+    team: k3s-admin
+    app.kubernetes.io/name: team1-shared-data-apps
+    app.kubernetes.io/managed-by: argocd
+    app.kubernetes.io/part-of: team1
+  annotations:
+    #argocd.argoproj.io/sync-wave: "0"
+    description: "ApplicationSet for team1 shared data apps deployment"
+spec:
+  generators:
+  - clusters:
+      selector:
+        matchExpressions:
+        - key: env
+          operator: In
+          values: [test, dev, prod]
+  template:
+    metadata:
+      name: "team1-shared-data-apps-{{metadata.labels.env}}"
+      namespace: argocd
+      labels:
+        app.kubernetes.io/name: team1-shared-data-apps
+        app.kubernetes.io/instance: "team1-shared-data-apps-{{metadata.labels.env}}"
+        app.kubernetes.io/managed-by: argocd
+        app.kubernetes.io/part-of: team1
+        environment: "{{metadata.labels.env}}"
+      finalizers:
+        - resources-finalizer.argocd.argoproj.io
+    spec:
+      project: apps
+      source:
+        $APP_SOME_GH_REPOSITORY-k3s_deployment.git
+        targetRevision: "{{metadata.labels.env}}"
+        path: argocd/team1/shared-data-apps/manifests
+        directory:
+          recurse: true
+      destination:
+        server: "{{server}}"
+        namespace: team1
+      syncPolicy:
+        automated:
+          prune: true
+          selfHeal: true
+        syncOptions:
+          - CreateNamespace=true

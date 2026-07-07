@@ -1,0 +1,22 @@
+namespace: team1
+labels:
+  team: k3s-admin
+  managed-by: argocd
+  part-of: mongodb
+storage:
+  size: 500Gi
+resources:
+  mongodb:
+    requests:
+      cpu: "500m"
+      memory: "512Mi"
+    limits:
+      cpu: "2000m"
+      memory: "2Gi"
+  initContainer:
+    requests:
+      cpu: "50m"
+      memory: "32Mi"
+    limits:
+      cpu: "100m"
+      memory: "64Mi"

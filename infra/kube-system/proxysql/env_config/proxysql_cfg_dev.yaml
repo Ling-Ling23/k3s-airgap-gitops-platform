@@ -1,0 +1,148 @@
+---
+# ProxySQL config — ATL cluster (dev environment)
+# Primary is LOCAL: all writes go to local MariaDB pods directly.
+# Apps connect to: proxysql.kube-system.svc.cluster.local:6033
+#
+# To add a new database when ready:
+#   1. Add entry to mysql_servers with the new service DNS
+#   2. Add entry to mysql_users with the app credentials for that DB
+#   3. kubectl rollout restart deployment/proxysql -n kube-system
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: proxysql-config
+  namespace: kube-system
+  labels:
+    app: proxysql
+    app.kubernetes.io/name: proxysql
+    app.kubernetes.io/part-of: infrastructure
+    app.kubernetes.io/managed-by: kubectl
+    team: k3s-admin
+data:
+  proxysql.cnf: |
+    datadir="/var/lib/proxysql"
+
+    admin_variables=
+    {
+        # __ADMIN_PASS__ is substituted by the config-init initContainer from proxysql-secrets
+        admin_credentials="admin:__ADMIN_PASS__"
+        mysql_ifaces="0.0.0.0:6032"
+        refresh_interval=2000
+    }
+
+    mysql_variables=
+    {
+        threads=4
+        max_connections=2048
+        interfaces="0.0.0.0:6033"
+        default_schema="information_schema"
+        # Report MariaDB version so clients don't complain about version mismatch
+        server_version="11.8.5-MariaDB"
+        connect_timeout_server=3000
+        # proxysql_monitor user must exist on every backend MariaDB — see proxysql.yaml header
+        monitor_username="proxysql_monitor"
+        monitor_password="__MONITOR_PASS__"
+        monitor_connect_interval=10000
+        monitor_ping_interval=10000
+        ping_timeout_server=500
+    }
+
+    # ---- Backend servers ----
+    # Each database gets its own hostgroup so ProxySQL never routes a user to the wrong backend.
+    # hostgroup 10 = app5
+    # hostgroup 20 = app1
+    # hostgroup 30 = app2
+    # hostgroup 40 = app4
+    # hostgroup 50 = app7
+    # hostgroup 60 = app6
+    # hostgroup 70 = app8
+    mysql_servers=
+    (
+        { address="app1-mariadb.team1.svc.cluster.local",          port=3306, hostgroup=20, max_connections=200, weight=1, comment="app1 ATL primary" },
+        { address="app2-mariadb.team1.svc.cluster.local",       port=3306, hostgroup=30, max_connections=200, weight=1, comment="app2 ATL primary" },
+        { address="app4-mariadb.team1.svc.cluster.local",     port=3306, hostgroup=40, max_connections=200, weight=1, comment="app4 ATL primary" },
+        { address="app5-mariadb.team1.svc.cluster.local", port=3306, hostgroup=10, max_connections=200, weight=1, comment="app5 ATL primary" },
+        { address="app6-mariadb.team1.svc.cluster.local", port=3306, hostgroup=60, max_connections=200, weight=1, comment="app6 ATL primary" },
+        { address="app7-mariadb.team2.svc.cluster.local",                  port=3306, hostgroup=50, max_connections=200, weight=1, comment="app7 ATL primary" },
+        { address="app8-mariadb.team1.svc.cluster.local",       port=3306, hostgroup=70, max_connections=200, weight=1, comment="app8 ATL primary" }
+    )
+
+    # ---- Frontend users ----
+    # Each user's default_hostgroup matches their database's dedicated hostgroup above.
+    # This guarantees ProxySQL never sends a user to a backend where they don't exist.
+    mysql_users=
+    (
+        {
+            username="app1_app"
+            password="__app1_PASS__"   # substituted by initContainer from proxysql-secrets key: app1-app-password
+            default_hostgroup=20
+            transaction_persistent=1
+            active=1
+            default_schema="app1"
+            comment="app1 app user"
+        },
+        {
+            username="app2_app"
+            password="__app2_PASS__"   # substituted by initContainer from proxysql-secrets key: app2-app-password
+            default_hostgroup=30
+            transaction_persistent=1
+            active=1
+            default_schema="app2"
+            comment="app2 app user"
+        },
+        {
+            username="app4_app"
+            password="__app4_PASS__"   # substituted by initContainer from proxysql-secrets key: app4-app-password
+            default_hostgroup=40
+            transaction_persistent=1
+            active=1
+            default_schema="app4"
+            comment="app4 app user"
+        },
+        {
+            username="app5_app"
+            password="__app5_PASS__"   # substituted by initContainer from proxysql-secrets key: app5-app-password
+            default_hostgroup=10
+            transaction_persistent=1
+            active=1
+            default_schema="app5"
+            comment="app5 app user"
+        },
+        {
+            username="app6_app"
+            password="__app6_PASS__"   # substituted by initContainer from proxysql-secrets key: app6-app-password
+            default_hostgroup=60
+            transaction_persistent=1
+            active=1
+            default_schema="app6"
+            comment="app6 app user"
+        },
+        {
+            username="app7_app"
+            password="__app7_PASS__"   # substituted by initContainer from proxysql-secrets key: app7-app-password
+            default_hostgroup=50
+            transaction_persistent=1
+            active=1
+            default_schema="app7"
+            comment="app7 app user"
+        },
+        {
+            username="app8_app"
+            password="__app8_PASS__"   # substituted by initContainer from proxysql-secrets key: app8-app-password
+            default_hostgroup=70
+            transaction_persistent=1
+            active=1
+            default_schema="app8"
+            comment="app8 app user"
+        }
+    )
+
+    # ---- Query routing rules ----
+    # No global rules needed: each user routes to their own dedicated write hostgroup
+    # via default_hostgroup. transaction_persistent=1 ensures SELECT FOR UPDATE stays
+    # on the write backend within a transaction.
+    # When read replicas are added, use per-user rules with the username field:
+    #   { rule_id=1, username="app5_app", active=1, match_pattern="^SELECT", destination_hostgroup=11, apply=1 }
+    mysql_query_rules=
+    (
+    )

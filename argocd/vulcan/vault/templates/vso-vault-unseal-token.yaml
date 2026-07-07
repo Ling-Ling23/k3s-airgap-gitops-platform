@@ -1,0 +1,14 @@
+apiVersion: secrets.hashicorp.com/v1beta1
+kind: VaultStaticSecret
+metadata:
+  name: vault-unseal-token
+  namespace: kube-system
+spec:
+  vaultAuthRef: vaultauth-kube-system
+  type: kv-v2
+  mount: k3s
+  path: env_shared/infra/vault/unseal_token
+  refreshAfter: 1m
+  destination:
+    create: true
+    name: vault-unseal-token  # Kubernetes Secret name to get

@@ -1,0 +1,75 @@
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: cadvisor
+  namespace: {{ .Values.namespace }}
+  labels:
+    app: cadvisor
+spec:
+  selector:
+    matchLabels:
+      app: cadvisor
+  template:
+    metadata:
+      labels:
+        app: cadvisor
+        app.kubernetes.io/name: cadvisor
+        app.kubernetes.io/part-of: {{ index .Values.labels "part-of" }}
+        app.kubernetes.io/managed-by: {{ index .Values.labels "managed-by" }}
+        environment: {{ .Values.labels.environment }}
+        team: {{ .Values.labels.team }}
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8080"
+        kubernetes.io/description: "Prometheus cAdvisor"
+        infrateam..com/owner: "infrateam-team"
+    spec:
+      hostNetwork: true
+      containers:
+      - name: cadvisor
+        image: $ARTIFACTORY/cadvisor/cadvisor:v0.52.0
+        resources:
+          limits:
+            memory: {{ .Values.cadvisor.resources.limits.memory | quote }}
+        ports:
+        - containerPort: 8080
+          hostPort: 8080
+        volumeMounts:
+        - name: rootfs
+          mountPath: /rootfs
+          readOnly: true
+        - name: varrun
+          mountPath: /var/run
+        - name: sys
+          mountPath: /sys
+          readOnly: true
+        - name: varlibcontainerd
+          mountPath: /var/lib/containerd
+          readOnly: true
+        - name: containerd-sock
+          mountPath: /run/containerd/containerd.sock
+          readOnly: true
+        - name: devdisk
+          mountPath: /dev/disk
+          readOnly: true
+      volumes:
+      - name: rootfs
+        hostPath:
+          path: /
+      - name: varrun
+        hostPath:
+          path: /var/run
+      - name: sys
+        hostPath:
+          path: /sys
+      - name: varlibcontainerd
+        hostPath:
+          path: /var/lib/containerd
+      - name: containerd-sock
+        hostPath:
+          path: /run/containerd/containerd.sock
+      - name: devdisk
+        hostPath:
+          path: /dev/disk
+      tolerations:
+      - operator: "Exists"

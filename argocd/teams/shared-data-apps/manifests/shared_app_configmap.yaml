@@ -1,0 +1,29 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: shared-app-config
+  namespace: team1
+data:
+  APP_ENV: test
+  DEBUG: "false"
+  APP_USER: $TOOLING_ACCOUNT_ID
+  APP_GROUP: mechid
+  APP_UID: "449050"
+  APP_GID: "35953"
+  APP_HOME: /home/$TOOLING_ACCOUNT_ID
+  APP_EMAIL: user_account_id@.com
+  APP_KEY: /run/secrets/id_rsa
+  APP_TYPE: lap
+  ADMINER_INSTALL: "true"
+  CODIAD_INSTALL: "true"
+  CREATE_PROJECT: "true"
+  HTTP_PROXY: $PROXY
+  HTTPS_PROXY: $PROXY
+  GIT_USER: $TOOLING_ACCOUNT_ID
+  GIT_EMAIL: $TOOLING_ACCOUNT_ID@.com
+  TERM: xterm
+  WEBCONSOLE_INSTALL: "true"
+  SMTPHOST: smtp.ems..com:25
+  PHP_MEMORY_LIMIT: 2G
+  REPLICATION_USER: replication
+  MYSQL_USER: $TOOLING_ACCOUNT_ID

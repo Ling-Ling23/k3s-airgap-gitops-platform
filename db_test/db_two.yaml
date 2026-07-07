@@ -1,0 +1,151 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  annotations:
+    argocd.argoproj.io/tracking-id: dbtwo-dev:apps/StatefulSet:team1/dbtwo-data
+  labels:
+    app: dbtwo-database
+    app.kubernetes.io/name: dbtwo
+    environment: dev
+    team: team1
+  name: dbtwo-data
+  namespace: team1
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: dbtwo-data
+  serviceName: dbtwo-mariadb
+  template:
+    metadata:
+      labels:
+        app: dbtwo-data
+        app.kubernetes.io/name: dbtwo
+        environment: dev
+        team: team1
+    spec:
+      containers:
+        - env:
+            - name: MYSQL_ROOT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  key: dbone   # reusing dbone key for dev — same root password
+                  name: team1-database-roots
+            - name: MYSQL_DATABASE
+              value: dbone   # must match dbone — replica replicates the dbone database
+            # --- Replication env vars ---
+            - name: REPL_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  key: repl_admin
+                  name: team1-database-roots
+            - name: REPL_ADMIN_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  key: repl_admin
+                  name: team1-database-roots
+            - name: REPL_HOST
+              valueFrom:
+                configMapKeyRef:
+                  key: REPL_HOST
+                  name: dbtwo-repl-env
+            - name: REPL_PORT
+              valueFrom:
+                configMapKeyRef:
+                  key: REPL_PORT
+                  name: dbtwo-repl-env
+          image: $ARTIFACTORY/mariadb:11.8.5
+          name: dbtwo-data
+          ports:
+            - containerPort: 3306
+              name: mysql
+              protocol: TCP
+          resources:
+            limits:
+              cpu: '2'
+              memory: 2G
+            requests:
+              cpu: '0.5'
+              memory: 512Mi
+          lifecycle:
+            postStart:
+              exec:
+                command:
+                  - /bin/bash
+                  - /usr/local/bin/setup-replication.sh
+          volumeMounts:
+            - mountPath: /var/lib/mysql
+              name: mariadb-data
+            - mountPath: /etc/mysql/conf.d/replication.cnf
+              name: replication-config
+              subPath: replication.cnf
+            # Init scripts: sourced by MariaDB entrypoint on first DB init
+            - mountPath: /docker-entrypoint-initdb.d/01-create-replication-user.sh
+              name: init-scripts
+              subPath: 01-create-replication-user.sh
+            # Setup script: called by postStart hook on every pod start
+            - mountPath: /usr/local/bin/setup-replication.sh
+              name: init-scripts
+              subPath: setup-replication.sh
+      hostname: dbtwo-dev-ga
+      initContainers:
+        - command:
+            - rm
+            - '-rf'
+            - /var/lib/mysql/lost+found
+          image: >-
+            $ARTIFACTORY/busybox:latest
+          name: cleanup-lost-found
+          resources:
+            limits:
+              cpu: 100m
+              memory: 64Mi
+            requests:
+              cpu: 50m
+              memory: 32Mi
+          volumeMounts:
+            - mountPath: /var/lib/mysql
+              name: mariadb-data
+        - command:
+            - sh
+            - '-c'
+            - |
+              mkdir -p /run/mysqld
+              chown mysql:mysql /run/mysqld
+              chmod 755 /run/mysqld
+          image: $ARTIFACTORY/mariadb:11.8.5
+          name: fix-mysqld-run-dir
+          resources:
+            limits:
+              cpu: 100m
+              memory: 64Mi
+            requests:
+              cpu: 50m
+              memory: 32Mi
+          securityContext:
+            runAsUser: 0
+          volumeMounts:
+            - mountPath: /run/mysqld
+              name: mariadb-run
+      volumes:
+        - emptyDir: {}
+          name: mariadb-run
+        - configMap:
+            name: dbtwo-replication-config
+          name: replication-config
+        - configMap:
+            name: dbone-init-scripts   # shared — scripts are identical, uses env vars
+            defaultMode: 0755
+          name: init-scripts
+  volumeClaimTemplates:
+    - metadata:
+        labels:
+          app: dbtwo-database
+        name: mariadb-data
+      spec:
+        accessModes:
+          - ReadWriteOnce
+        resources:
+          requests:
+            storage: 150Gi
+        storageClassName: longhorn

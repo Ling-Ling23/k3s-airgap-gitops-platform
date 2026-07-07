@@ -1,0 +1,47 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: loki
+  namespace: {{ .Values.namespace }}
+  labels:
+    app: loki
+    app.kubernetes.io/name: loki
+    app.kubernetes.io/part-of: {{ index .Values.labels "part-of" }}
+    app.kubernetes.io/managed-by: {{ index .Values.labels "managed-by" }}
+    environment: {{ .Values.labels.environment }}
+    team: {{ .Values.labels.team }}
+spec:
+  #clusterIP: None
+  ports:
+    - name: http
+      port: 3100
+      targetPort: 3100
+    - name: memberlist
+      port: 7946
+      targetPort: 7946
+  selector:
+    app: loki
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: loki-compactor
+  namespace: {{ .Values.namespace }}
+  labels:
+    app: loki-compactor
+    app.kubernetes.io/name: loki-compactor
+    app.kubernetes.io/part-of: {{ index .Values.labels "part-of" }}
+    app.kubernetes.io/managed-by: {{ index .Values.labels "managed-by" }}
+    environment: {{ .Values.labels.environment }}
+    team: {{ .Values.labels.team }}
+spec:
+  selector:
+    app: loki-compactor
+  ports:
+    - name: grpc
+      protocol: TCP
+      port: 9095
+      targetPort: 9095
+    - name: http
+      port: 3100
+      targetPort: 3100

@@ -1,0 +1,6 @@
+env:
+  GF_SERVER_ROOT_URL: https://$NODE_4.test..com:8443/grafana/
+config:
+  projectGitBranch: "test"
+labels:
+  environment: test

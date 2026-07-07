@@ -1,0 +1,8 @@
+namespace: "logging"
+labels:
+  team: k3s-admin
+  managed-by: argocd
+  part-of: logging
+
+loki: # new
+  replicas: 1

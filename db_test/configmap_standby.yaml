@@ -1,0 +1,33 @@
+# Deploy this ConfigMap to the LA cluster (standby / read-only)
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: dbtwo-replication-config
+  namespace: team1
+  labels:
+    app: dbtwo-database
+data:
+  replication.cnf: |
+    [mysqld]
+    # --- Identity ---
+    server_id              = 2          # must differ from ATL
+    gtid_domain_id         = 2          # domain 2 = dbtwo/LA; domain 1 = dbone/ATL
+                                        # separate domains prevent GTID sequence conflicts
+    # --- Auto-increment offset (master-master conflict prevention) ---
+    auto_increment_increment = 2        # step by 2: 2, 4, 6, 8...
+    auto_increment_offset    = 2        # dbtwo starts at 2 (even numbers)
+    # --- Binary logging (must be ON so LA can be promoted without restart) ---
+    log_bin            = mysql-bin
+    binlog_format      = ROW
+    log_slave_updates  = ON
+    expire_logs_days   = 7
+    # --- GTID ---
+    gtid_strict_mode   = ON
+    # --- Relay log ---
+    relay_log          = relay-bin
+    relay_log_index    = relay-bin.index
+    # --- Standby is read-only; survives pod restarts ---
+    read_only          = ON
+    # --- Performance / safety ---
+    innodb_flush_log_at_trx_commit = 1
+    sync_binlog                    = 1

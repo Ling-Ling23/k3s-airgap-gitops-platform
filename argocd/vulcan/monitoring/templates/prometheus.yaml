@@ -1,0 +1,163 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: prometheus
+  namespace: {{ .Values.namespace }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: prometheus
+rules:
+- apiGroups: [""]
+  resources:
+    - nodes
+    - nodes/metrics
+    - nodes/proxy
+    - services
+    - endpoints
+    - pods
+  verbs: ["get", "list", "watch"]
+- apiGroups: ["extensions"]
+  resources:
+    - ingresses
+  verbs: ["get", "list", "watch"]
+- nonResourceURLs: ["/metrics", "/metrics/cadvisor"]
+  verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: prometheus
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: prometheus
+subjects:
+- kind: ServiceAccount
+  name: prometheus
+  namespace: {{ .Values.namespace }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: prometheus-data
+  namespace: {{ .Values.namespace }}
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 20Gi
+  storageClassName: longhorn
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: prometheus
+  namespace: {{ .Values.namespace }}
+spec:
+  type: ClusterIP
+  ports:
+    - port: 9090
+      targetPort: 9090
+  selector:
+    app: prometheus
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: prometheus
+  namespace: {{ .Values.namespace }}
+spec:
+  replicas: 1
+  revisionHistoryLimit: 4
+  selector:
+    matchLabels:
+      app: prometheus
+  template:
+    metadata:
+      labels:
+        app: prometheus
+        app.kubernetes.io/name: prometheus
+        app.kubernetes.io/part-of: {{ index .Values.labels "part-of" }}
+        app.kubernetes.io/managed-by: {{ index .Values.labels "managed-by" }}
+        environment: {{ .Values.labels.environment }}
+        team: {{ .Values.labels.team }}
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9090"
+        kubernetes.io/description: "Prometheus monitoring server"
+        infrateam..com/owner: "infrateam-team"
+    spec:
+      nodeSelector:
+        owner: team1
+      serviceAccountName: prometheus
+      securityContext:
+        runAsUser: 0
+        runAsGroup: 999
+      containers:
+      - name: prometheus
+        image: $ARTIFACTORY/prometheus/prometheus:v3.4.0
+        ports:
+        - containerPort: 9090
+        resources:
+            requests:
+              cpu: "500m"
+              memory: "1Gi"
+            limits:
+              cpu: "2"
+              memory: "4Gi"
+        livenessProbe:
+          httpGet:
+            path: /prometheus/-/healthy
+            port: 9090
+          initialDelaySeconds: 30
+          periodSeconds: 30
+        readinessProbe:
+          httpGet:
+            path: /prometheus/-/ready
+            port: 9090
+          initialDelaySeconds: 10
+          periodSeconds: 10
+        volumeMounts:
+          - name: prometheus-config
+            mountPath: /etc/prometheus
+          - name: rules
+            mountPath: /etc/prometheus/rules
+        args:
+          - '--config.file=/etc/prometheus/prometheus.yml'
+          - '--storage.tsdb.path=/prometheus'
+          - '--web.console.libraries=/usr/share/prometheus/console_libraries'
+          - '--web.console.templates=/usr/share/prometheus/consoles'
+          - '--web.enable-lifecycle'
+          - '--web.external-url=/prometheus'
+          - '--web.route-prefix=/prometheus'
+      volumes:
+      - name: prometheus-data
+        persistentVolumeClaim:
+          claimName: prometheus-data
+      - name: prometheus-config
+        configMap:
+          name: prometheus-config
+          items:
+            - key: prometheus.yml
+              path: prometheus.yml
+      - name: rules
+        projected:
+          sources:
+            - configMap:
+                name: prometheus-container-alerts
+                items:
+                - key: container_alerts.yml
+                  path: container_alerts.yml
+            - configMap:
+                name: prometheus-node-alerts
+                items:
+                - key: node_alerts.yml
+                  path: node_alerts.yml
+            - configMap:
+                name: prometheus-mysql-replication-alerts
+                items:
+                - key: mysql_replication_alerts.yml
+                  path: mysql_replication_alerts.yml

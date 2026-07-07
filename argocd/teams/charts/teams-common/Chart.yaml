@@ -1,0 +1,5 @@
+apiVersion: v2
+name: team1-common
+description: Shared Helm library chart for team1 applications
+type: library
+version: 0.1.0

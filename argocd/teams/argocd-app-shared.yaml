@@ -1,0 +1,34 @@
+apiVersion: argoproj.io/v1alpha1
+kind: ApplicationSet
+metadata:
+  name: team1-shared
+  namespace: argocd
+spec:
+  generators:
+  - clusters:
+      selector:
+        matchExpressions:
+        - key: env
+          operator: In
+          values: [test, dev, prod]
+  template:
+    metadata:
+      name: "team1-shared-{{metadata.labels.env}}"
+      namespace: argocd
+      finalizers:
+        - resources-finalizer.argocd.argoproj.io
+    spec:
+      project: default
+      source:
+        $APP_SOME_GH_REPOSITORY-k3s_deployment.git
+        targetRevision: "{{metadata.labels.env}}"
+        path: argocd/apps/team1/shared_for_apps/manifests
+      destination:
+        server: "{{server}}"
+        namespace: team1
+      syncPolicy:
+        automated:
+          prune: true
+          selfHeal: true
+        syncOptions:
+          - CreateNamespace=true

@@ -1,0 +1,17 @@
+apiVersion: v1
+kind: Service
+metadata:
+  labels:
+    app: dbone-database
+  name: dbone-mariadb-nodeport
+  namespace: team1
+spec:
+  type: NodePort
+  ports:
+    - name: mysql
+      port: 3306
+      protocol: TCP
+      targetPort: 3306
+      nodePort: 30336   # change if 30336 is already in use (range: 30000-32767)
+  selector:
+    app: dbone-data

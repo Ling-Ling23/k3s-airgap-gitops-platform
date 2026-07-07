@@ -1,0 +1,11 @@
+# dbtwo (standby/test) — replicates from dbone using in-cluster headless DNS.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: dbtwo-repl-env
+  namespace: team1
+  labels:
+    app: dbtwo-database
+data:
+  REPL_HOST: "dbone-data-0.dbone-mariadb.team1.svc.cluster.local"
+  REPL_PORT: "3306"   # in-cluster — no NodePort needed

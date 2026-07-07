@@ -1,0 +1,5 @@
+namespace: kube-system
+labels:
+  team: k3s-admin
+  managed-by: argocd
+  part-of: vault

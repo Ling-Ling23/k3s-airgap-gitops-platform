@@ -1,0 +1,8 @@
+apiVersion: secrets.hashicorp.com/v1beta1
+kind: VaultConnection
+metadata:
+  name: vault
+  namespace: argocd
+spec:
+  address: "https://$FQDN:8202"
+  skipTLSVerify: true

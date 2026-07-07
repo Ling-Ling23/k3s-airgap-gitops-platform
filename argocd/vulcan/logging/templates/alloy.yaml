@@ -1,0 +1,219 @@
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: alloy
+  namespace: {{ .Values.namespace }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: alloy
+rules:
+  - apiGroups: ['']
+    resources: ['pods', 'nodes', 'namespaces']
+    verbs: ['get', 'list', 'watch']
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: alloy
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: alloy
+subjects:
+  - kind: ServiceAccount
+    name: alloy
+    namespace: {{ .Values.namespace }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: alloy-config
+  namespace: {{ .Values.namespace }}
+  labels:
+    app: alloy
+    app.kubernetes.io/name: alloy
+    app.kubernetes.io/part-of: {{ index .Values.labels "part-of" }}
+    app.kubernetes.io/managed-by: {{ index .Values.labels "managed-by" }}
+    environment: {{ .Values.labels.environment }}
+    team: {{ .Values.labels.team }}
+data:
+  config.alloy: |
+    // ── Loki target ──────────────────────────────────────────────────────────────
+    loki.write "default" {
+      endpoint {
+        url = "http://loki.{{ .Values.namespace }}.svc.cluster.local:3100/loki/api/v1/push"
+      }
+    }
+
+    // ── Job: containers (/var/log/containers/*.log) ───────────────────────────────
+    local.file_match "containers" {
+      path_targets = [{
+        __path__ = "/var/log/containers/*.log",
+        job      = "containers",
+      }]
+    }
+
+    loki.source.file "containers" {
+      targets    = local.file_match.containers.targets
+      forward_to = [loki.process.containers.receiver]
+    }
+
+    loki.process "containers" {
+      forward_to = [loki.write.default.receiver]
+
+      stage.cri {}
+
+      stage.regex {
+        expression = "/var/log/containers/(?P<pod>[^_]+)_(?P<namespace>[^_]+)_(?P<container>.+)-[^-]+\\.log"
+        source     = "filename"
+      }
+
+      stage.labels {
+        values = {
+          pod       = null,
+          namespace = null,
+          container = null,
+        }
+      }
+    }
+
+    // ── Job: python-containers (/opt/logs/pylogs/*/*.log) ─────────────────────────
+    local.file_match "python_containers" {
+      path_targets = [{
+        __path__ = "/opt/logs/pylogs/*/*.log",
+        job      = "python-containers",
+      }]
+    }
+
+    loki.source.file "python_containers" {
+      targets    = local.file_match.python_containers.targets
+      forward_to = [loki.process.python_containers.receiver]
+    }
+
+    loki.process "python_containers" {
+      forward_to = [loki.write.default.receiver]
+
+      stage.drop {
+        source     = "filename"
+        expression = ".*bgtmohoho.*"
+      }
+
+      stage.regex {
+        expression = "^(?:\\S+) - (?P<owner>\\S+) - (?:\\S+) - (?P<timestamp>\\d{4}-\\d{2}-\\d{2} \\S+) - (?P<logger_name>\\S+) - (?P<level>\\S+) - (?P<message>.+)$"
+      }
+
+      stage.labels {
+        values = {
+          owner       = null,
+          logger_name = null,
+          level       = null,
+        }
+      }
+
+      stage.regex {
+        source     = "filename"
+        expression = "/opt/logs/pylogs/(?P<project_name>[^/]+)/"
+      }
+
+      stage.labels {
+        values = {
+          project_name = null,
+        }
+      }
+    }
+
+    // ── Job: rsyslog (/opt/logs/pylogs/*bgtmohoho.log) ───────────────────────────
+    local.file_match "rsyslog" {
+      path_targets = [{
+        __path__ = "/opt/logs/pylogs/*bgtmohoho.log",
+        job      = "rsyslog",
+        logtype  = "py3-bgtmohoho",
+      }]
+    }
+
+    loki.source.file "rsyslog" {
+      targets    = local.file_match.rsyslog.targets
+      forward_to = [loki.process.rsyslog.receiver]
+    }
+
+    loki.process "rsyslog" {
+      forward_to = [loki.write.default.receiver]
+
+      stage.regex {
+        expression = "^[^ ]+ [^ ]+  (?P<json_blob>\\{.*\\})$"
+      }
+
+      stage.json {
+        expressions = {
+          owner       = "",
+          logger_name = "",
+          used_by     = "",
+          level       = "",
+        }
+        source = "json_blob"
+      }
+
+      stage.labels {
+        values = {
+          owner       = null,
+          logger_name = null,
+          used_by     = null,
+          level       = null,
+        }
+      }
+    }
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: alloy
+  namespace: {{ .Values.namespace }}
+  labels:
+    app: alloy
+spec:
+  selector:
+    matchLabels:
+      app: alloy
+  template:
+    metadata:
+      labels:
+        app: alloy
+        app.kubernetes.io/name: alloy
+        app.kubernetes.io/part-of: {{ index .Values.labels "part-of" }}
+        app.kubernetes.io/managed-by: {{ index .Values.labels "managed-by" }}
+        environment: {{ .Values.labels.environment }}
+        team: {{ .Values.labels.team }}
+    spec:
+      serviceAccountName: alloy
+      containers:
+        - name: alloy
+          image: $ARTIFACTORY/docker-hub/grafana/alloy:v1.9.1
+          args:
+            - "run"
+            - "--storage.path=/var/lib/alloy/data"
+            - "/etc/alloy/config.alloy"
+          volumeMounts:
+            - name: config
+              mountPath: /etc/alloy
+            - name: varlog
+              mountPath: /var/log
+            - name: optlogs
+              mountPath: /opt/logs
+            - name: storage
+              mountPath: /var/lib/alloy/data
+      volumes:
+        - name: config
+          configMap:
+            name: alloy-config
+        - name: varlog
+          hostPath:
+            path: /var/log
+        - name: optlogs
+          hostPath:
+            path: /opt/logs
+        - name: storage
+          hostPath:
+            path: /var/lib/alloy

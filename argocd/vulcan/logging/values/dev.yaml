@@ -1,0 +1,4 @@
+config:
+  projectGitBranch: "develop"
+labels:
+  environment: dev

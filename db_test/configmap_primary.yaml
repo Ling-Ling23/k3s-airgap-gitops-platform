@@ -1,0 +1,33 @@
+# Deploy this ConfigMap to the ATL cluster (primary / writable)
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: dbone-replication-config
+  namespace: team1
+  labels:
+    app: dbone-database
+data:
+  replication.cnf: |
+    [mysqld]
+    # --- Identity ---
+    server_id              = 1          # must be unique across both nodes
+    gtid_domain_id         = 1          # domain 1 = dbone/ATL; domain 2 = dbtwo/LA
+                                        # separate domains prevent GTID sequence conflicts
+    # --- Auto-increment offset (master-master conflict prevention) ---
+    auto_increment_increment = 2        # step by 2: 1, 3, 5, 7...
+    auto_increment_offset    = 1        # dbone starts at 1 (odd numbers)
+    # --- Binary logging (required for replication & promotion) ---
+    log_bin            = mysql-bin
+    binlog_format      = ROW
+    log_slave_updates  = ON         # so LA also logs what it replicates (needed for master-master)
+    expire_logs_days   = 7
+    # --- GTID ---
+    gtid_strict_mode   = ON
+    # --- Relay log ---
+    relay_log          = relay-bin
+    relay_log_index    = relay-bin.index
+    # --- Primary is writable (read_only=OFF by default, but explicit is clearer) ---
+    read_only          = OFF
+    # --- Performance / safety ---
+    innodb_flush_log_at_trx_commit = 1
+    sync_binlog                    = 1

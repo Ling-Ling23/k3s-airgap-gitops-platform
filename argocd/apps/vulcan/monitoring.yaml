@@ -1,0 +1,52 @@
+apiVersion: argoproj.io/v1alpha1
+kind: ApplicationSet
+metadata:
+  name: monitoring
+  namespace: argocd
+  labels:
+    team: k3s-admin
+    app.kubernetes.io/name: monitoring
+    app.kubernetes.io/managed-by: argocd
+    app.kubernetes.io/part-of: vulcan
+  annotations:
+    #argocd.argoproj.io/sync-wave: "0"
+    description: "ApplicationSet for monitoring stack"
+spec:
+  generators:
+  - clusters:
+      selector:
+        matchExpressions:
+        - key: env
+          operator: In
+          values: [test, dev, prod]
+  template:
+    metadata:
+      name: "monitoring-{{metadata.labels.env}}"
+      namespace: argocd
+      labels:
+        app.kubernetes.io/name: monitoring
+        app.kubernetes.io/instance: "monitoring-{{metadata.labels.env}}"
+        app.kubernetes.io/managed-by: argocd
+        app.kubernetes.io/part-of: vulcan
+        environment: "{{metadata.labels.env}}"
+      finalizers:
+        - resources-finalizer.argocd.argoproj.io
+    spec:
+      project: infra
+      source:
+        $APP_SOME_GH_REPOSITORY-k3s_deployment.git
+        targetRevision: "{{metadata.labels.env}}"
+        path: argocd/vulcan/monitoring
+        helm:
+          valueFiles:
+            - values/common.yaml
+            - "values/{{metadata.labels.env}}.yaml"
+      destination:
+        server: "{{server}}"
+        namespace: monitoring
+      syncPolicy:
+        automated:
+          prune: true
+          selfHeal: true
+        syncOptions:
+          - CreateNamespace=true

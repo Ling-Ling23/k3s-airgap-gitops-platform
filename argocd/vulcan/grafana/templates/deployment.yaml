@@ -1,0 +1,184 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: grafana
+  namespace: {{ .Values.namespace }}
+spec:
+  type: ClusterIP
+  ports:
+    - port: 3000
+      targetPort: 3000
+  selector:
+    app: grafana
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: grafana
+  namespace: {{ .Values.namespace }}
+spec:
+  replicas: 1
+  revisionHistoryLimit: 4
+  selector:
+    matchLabels:
+      app: grafana
+  template:
+    metadata:
+      labels:
+        app: grafana
+        app.kubernetes.io/name: grafana
+        app.kubernetes.io/part-of: {{ index .Values.labels "part-of" }}
+        app.kubernetes.io/managed-by: {{ index .Values.labels "managed-by" }}
+        environment: {{ .Values.labels.environment }}
+        team: {{ .Values.labels.team }}
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "3000"
+        kubernetes.io/description: "Grafana monitoring dashboard"
+        infrateam..com/owner: "infrateam-team"
+    spec:
+      nodeSelector:
+        owner: team1
+      initContainers:
+        - name: fix-pvc-permissions
+          image: {{ .Values.image }}
+          command:
+            - sh
+            - -c
+            - chown -R 472:472 /var/lib/grafana && chmod 755 /var/lib/grafana || true
+          securityContext:
+            runAsUser: 0
+            runAsGroup: 0
+          volumeMounts:
+            - name: grafana-data
+              mountPath: /var/lib/grafana
+      containers:
+      - name: grafana
+        image: {{ .Values.image }}
+        ports:
+        - containerPort: 3000
+        resources:
+          requests:
+            cpu: {{ .Values.grafana.resources.requests.cpu | quote }}
+            memory: {{ .Values.grafana.resources.requests.memory | quote }}
+          limits:
+            cpu: {{ .Values.grafana.resources.limits.cpu | quote }}
+            memory: {{ .Values.grafana.resources.limits.memory | quote }}
+        livenessProbe:
+          httpGet:
+            path: /api/health
+            port: 3000
+          initialDelaySeconds: 60
+          periodSeconds: 30
+        readinessProbe:
+          httpGet:
+            path: /api/health
+            port: 3000
+          initialDelaySeconds: 10
+          periodSeconds: 10
+        volumeMounts:
+        - name: grafana-data
+          mountPath: /var/lib/grafana
+        - name: grafana-dashboards
+          mountPath: /etc/grafana/provisioning/dashboards/
+        - name: grafana-datasources
+          mountPath: /etc/grafana/provisioning/datasources/
+        - name: dashboards
+          mountPath: /var/lib/grafana/dashboards
+        env:
+          - name: GF_SECURITY_ADMIN_USER
+            value: admin
+          - name: GF_SECURITY_ADMIN_PASSWORD
+            valueFrom:
+              secretKeyRef:
+                name: grafana-admin-secret
+                key: admin
+          - name: GF_USERS_ALLOW_SIGN_UP
+            value: "false"
+          - name: GF_INSTALL_PLUGINS
+            value: ""
+          - name: GF_PLUGINS_ALLOW_LOADING_UNSIGNED_PLUGINS
+            value: "false"
+          - name: GF_PLUGINS_AUTO_INSTALL
+            value: "false"
+          - name: GF_UPDATE_CHECK_DISABLE
+            value: "true"
+          - name: GF_ANALYTICS_REPORTING_ENABLED
+            value: "false"
+          - name: GF_ANALYTICS_CHECK_FOR_UPDATES
+            value: "false"
+          - name: GF_SERVER_ROOT_URL
+            value: {{ .Values.env.GF_SERVER_ROOT_URL | quote }}
+          - name: WAREHOUSE_DB_PASSWORD
+            valueFrom:
+              secretKeyRef:
+                name: app6-db-secret
+                key: password
+          #- name: GF_SERVER_SERVE_FROM_SUB_PATH
+          #  value: "true"
+          # !- name: GF_AUTH_PROXY_ENABLED
+          # !  value: "true"
+          # !- name: GF_AUTH_PROXY_HEADER_NAME
+          # !  value: csp-attuid
+          # !- name: GF_AUTH_PROXY_HEADER_PROPERTY
+          # !  value: username
+          # !- name: GF_AUTH_PROXY_AUTO_SIGN_UP
+          # !  value: "true"
+          # !- name: GF_DATABASE_TYPE
+          # !  value: mysql
+          # !- name: GF_DATABASE_HOST
+          # !  value: $NODE_1.dev..com:9333
+          # !- name: GF_DATABASE_NAME
+          # !  value: monitoring
+          # !- name: GF_DATABASE_USER
+          # !  value: root
+          # !- name: GF_DATABASE_PASSWORD
+          # !  value: secret
+      volumes:
+      - name: grafana-data
+        persistentVolumeClaim:
+          claimName: grafana-data
+      - name: grafana-dashboards
+        configMap:
+          name: grafana-dashboards
+          items:
+            - key: dashboards.yml
+              path: dashboards.yml
+      - name: grafana-datasources
+        configMap:
+          name: grafana-datasources
+          items:
+            - key: datasource.yml
+              path: datasource.yml
+      - name: dashboards
+        projected:
+          sources:
+            - configMap:
+                name: grafana-cadvisor-dashboard
+                items:
+                - key: cadvisor-dashboard.json
+                  path: cadvisor-dashboard.json
+            - configMap:
+                name: grafana-node-exporter-dashboard
+                items:
+                - key: node-exporter-dashboard.json
+                  path: node-exporter-dashboard.json
+            - configMap:
+                name: grafana-tools-usage-dashboard
+                items:
+                - key: tools-usage-dashboard.json
+                  path: tools-usage-dashboard.json
+            - configMap:
+                name: grafana-tools-usage-per-user-dashboard
+                items:
+                - key: tools-usage-per-user-dashboard.json
+                  path: tools-usage-per-user-dashboard.json
+            - configMap:
+                name: grafana-log-observability-dashboard
+                items:
+                - key: log_observability_insights.json
+                  path: log_observability_insights.json
+      securityContext:
+        runAsUser: 472
+        runAsGroup: 472
+        fsGroup: 472

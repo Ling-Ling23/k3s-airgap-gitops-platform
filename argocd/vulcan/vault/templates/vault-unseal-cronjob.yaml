@@ -1,0 +1,62 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: vault-unseal
+  namespace: kube-system
+  labels:
+    app: vault-unseal
+    app.kubernetes.io/name: vault-unseal
+    app.kubernetes.io/part-of: infrastructure
+    app.kubernetes.io/managed-by: kubectl
+    team: k3s-admin
+spec:
+  schedule: "* * * * *"  # every minute
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    metadata:
+      labels:
+        app: vault-unseal
+    spec:
+      template:
+        metadata:
+          labels:
+            app: vault-unseal
+        spec:
+          restartPolicy: OnFailure
+          containers:
+          - name: vault-unseal
+            image: $ARTIFACTORY/att-dkr-public-group/alpine:latest
+            command:
+            - sh
+            - -c
+            - |
+              response=$(wget -qO- --no-check-certificate https://vault.kube-system.svc:8220/v1/sys/seal-status 2>/dev/null)
+              if [ -z "$response" ]; then
+                echo "vault is not running or unreachable"
+                exit 0
+              fi
+              sealed=$(echo "$response" | grep -o '"sealed":[^,}]*' | cut -d: -f2 | tr -d ' ')
+              if [ "$sealed" = "true" ]; then
+                echo "vault is sealed - unsealing..."
+                wget -qO- --no-check-certificate \
+                  --post-data="{\"key\": \"$UNSEAL_KEY\"}" \
+                  --header="Content-Type: application/json" \
+                  https://vault.kube-system.svc:8220/v1/sys/unseal
+              else
+                echo "vault is not sealed"
+              fi
+            env:
+            - name: UNSEAL_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: vault-unseal-token
+                  key: unseal_token
+            resources:
+              requests:
+                cpu: "50m"
+                memory: "32Mi"
+              limits:
+                cpu: "100m"
+                memory: "64Mi"

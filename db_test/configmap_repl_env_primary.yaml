@@ -1,0 +1,12 @@
+# Deploy to the ATL cluster — or same cluster for testing.
+# REPL_HOST uses in-cluster headless DNS since dbone and dbtwo are in the same namespace.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: dbone-repl-env
+  namespace: team1
+  labels:
+    app: dbone-database
+data:
+  REPL_HOST: "dbtwo-data-0.dbtwo-mariadb.team1.svc.cluster.local"
+  REPL_PORT: "3306"   # in-cluster — no NodePort needed

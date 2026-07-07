@@ -1,0 +1,127 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: alertmanager-config
+  namespace: {{ .Values.namespace }}
+  labels:
+    app: alertmanager
+    app.kubernetes.io/name: alertmanager
+    app.kubernetes.io/part-of: {{ index .Values.labels "part-of" }}
+    app.kubernetes.io/managed-by: {{ index .Values.labels "managed-by" }}
+    environment: {{ .Values.labels.environment }}
+    team: {{ .Values.labels.team }}
+data:
+  config.yml: |
+    global:
+      resolve_timeout: 5m
+
+    route:
+      group_by: ['alertname']
+      group_wait: 10s
+      group_interval: 10s
+      repeat_interval: 2h
+      receiver: 'flask-api'
+
+    receivers:
+    - name: 'flask-api'
+      # webhook_configs:
+      # - url: '{{ index .Values.alertmanager "flask-api-url" }}'
+      #   send_resolved: true
+      #   http_config:
+      #     tls_config:
+      #       insecure_skip_verify: true
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: alertmanager-data
+  namespace: {{ .Values.namespace }}
+  labels:
+    app: alertmanager
+    app.kubernetes.io/name: alertmanager
+    app.kubernetes.io/part-of: {{ index .Values.labels "part-of" }}
+    app.kubernetes.io/managed-by: {{ index .Values.labels "managed-by" }}
+    environment: {{ .Values.labels.environment }}
+    team: {{ .Values.labels.team }}
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 2Gi
+  storageClassName: longhorn
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: alertmanager
+  namespace: {{ .Values.namespace }}
+spec:
+  replicas: 1
+  revisionHistoryLimit: 3
+  selector:
+    matchLabels:
+      app: alertmanager
+  template:
+    metadata:
+      labels:
+        app: alertmanager
+        app.kubernetes.io/name: alertmanager
+        app.kubernetes.io/part-of: {{ index .Values.labels "part-of" }}
+        app.kubernetes.io/managed-by: {{ index .Values.labels "managed-by" }}
+        environment: {{ .Values.labels.environment }}
+        team: {{ .Values.labels.team }}
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9093"
+        kubernetes.io/description: "Prometheus Alertmanager"
+        infrateam..com/owner: "infrateam-team"
+    spec:
+      nodeSelector:
+        owner: team1
+      containers:
+      - name: alertmanager
+        image: $ARTIFACTORY/prom/alertmanager:v0.28.1
+        args:
+          - '--config.file=/etc/alertmanager/config.yml'
+          - '--storage.path=/alertmanager'
+        ports:
+        - containerPort: 9093
+        resources:
+          limits:
+            memory: {{ .Values.alertmanager.resources.limits.memory | quote }}
+        volumeMounts:
+        - name: alertmanager-config
+          mountPath: /etc/alertmanager/
+        - name: data
+          mountPath: /alertmanager
+      volumes:
+      - name: alertmanager-config
+        configMap:
+          name: alertmanager-config
+          items:
+            - key: config.yml
+              path: config.yml
+      - name: data
+        persistentVolumeClaim:
+          claimName: alertmanager-data
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: alertmanager
+  namespace: {{ .Values.namespace }}
+  labels:
+    app: alertmanager
+    app.kubernetes.io/name: alertmanager
+    app.kubernetes.io/part-of: {{ index .Values.labels "part-of" }}
+    app.kubernetes.io/managed-by: {{ index .Values.labels "managed-by" }}
+    environment: {{ .Values.labels.environment }}
+    team: {{ .Values.labels.team }}
+spec:
+  type: ClusterIP
+  ports:
+    - port: 9093
+      targetPort: 9093
+  selector:
+    app: alertmanager

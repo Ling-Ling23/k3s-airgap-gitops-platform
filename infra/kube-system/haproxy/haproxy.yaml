@@ -1,0 +1,165 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: haproxy
+  namespace: kube-system
+  labels:
+    app: haproxy
+    app.kubernetes.io/name: haproxy
+    app.kubernetes.io/part-of: infrastructure
+    app.kubernetes.io/managed-by: kubectl
+    team: k3s-admin
+spec:
+  replicas: 2
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 1
+      maxSurge: 1
+  selector:
+    matchLabels:
+      app: haproxy
+  template:
+    metadata:
+      labels:
+        app: haproxy
+        app.kubernetes.io/name: haproxy
+        app.kubernetes.io/part-of: infrastructure
+        app.kubernetes.io/managed-by: kubectl
+        team: k3s-admin
+    spec:
+      #hostNetwork: true
+      topologySpreadConstraints:
+      - maxSkew: 1              # max difference between most-loaded and least-loaded node
+        topologyKey: kubernetes.io/hostname
+        whenUnsatisfiable: ScheduleAnyway   # DoNotSchedule (hard) — or ScheduleAnyway (soft)
+        labelSelector:
+          matchLabels:
+            app: haproxy
+      containers:
+      - name: haproxy
+        image: $ARTIFACTORY/att-dkr-public-group/haproxy:3.2-alpine
+        ports:
+        - containerPort: 443
+        #- containerPort: 80
+        - containerPort: 8443
+        #- containerPort: 8202
+        - containerPort: 9443
+        - containerPort: 8220
+        #- containerPort: 3381
+        - containerPort: 6033
+        - containerPort: 3336
+        - containerPort: 3337
+        - containerPort: 3338
+        - containerPort: 3339
+        - containerPort: 3340
+        - containerPort: 3341
+        - containerPort: 3342
+        volumeMounts:
+        - name: haproxy-config
+          mountPath: /usr/local/etc/haproxy/haproxy.cfg
+          subPath: haproxy.cfg
+        - name: haproxy-tls
+          mountPath: /usr/local/etc/haproxy/infrateam.pem
+          subPath: infrateam.pem
+        - name: haloe-web-junction-pem
+          mountPath: /etc/ssl/certs/haloe-web-junction-cert-chain.pem
+          subPath: haloe-web-junction-cert-chain.pem
+      volumes:
+      - name: haproxy-config
+        configMap:
+          name: haproxy-config
+      - name: haproxy-tls
+        secret:
+          secretName: team1-certs
+          items:
+          - key: infrateam.pem
+            path: infrateam.pem
+      - name: haloe-web-junction-pem
+        secret:
+          secretName: haloe-web-junction-pem
+          items:
+          - key: haloe-web-junction-cert-chain.pem
+            path: haloe-web-junction-cert-chain.pem
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: haproxy
+  namespace: kube-system
+  labels:
+    app: haproxy
+    app.kubernetes.io/name: haproxy
+    app.kubernetes.io/part-of: infrastructure
+    app.kubernetes.io/managed-by: kubectl
+    team: k3s-admin
+spec:
+  type: LoadBalancer
+  ports:
+    - name: web-junction
+      port: 443
+      targetPort: 443
+    - name: https
+      port: 8443
+      targetPort: 8443
+    - name: vault
+      port: 8220
+      targetPort: 8220
+      protocol: TCP
+    - name: argocd
+      port: 9443
+      targetPort: 9443
+      protocol: TCP
+    - name: mongo-tcp
+      port: 28017
+      targetPort: 28017
+      protocol: TCP
+    - name: proxysql
+      port: 6033
+      targetPort: 6033
+      protocol: TCP
+    - name: mariadb-replication-app5
+      port: 3336
+      targetPort: 3336
+      protocol: TCP
+    - name: mariadb-replication-app7
+      port: 3337
+      targetPort: 3337
+      protocol: TCP
+    - name: mariadb-replication-app1
+      port: 3338
+      targetPort: 3338
+      protocol: TCP
+    - name: mariadb-replication-app2
+      port: 3339
+      targetPort: 3339
+      protocol: TCP
+    - name: mariadb-replication-app4
+      port: 3340
+      targetPort: 3340
+      protocol: TCP
+    - name: mariadb-replication-app6
+      port: 3341
+      targetPort: 3341
+      protocol: TCP
+    - name: mariadb-replication-app8
+      port: 3342
+      targetPort: 3342
+      protocol: TCP  
+    #- name: k3s-api DON'T USE THIS, IT BREAKS THE API SERVER FOR K3S
+    #  port: 6443
+    #  targetPort: 6443
+    #  protocol: TCP
+  selector:
+    app: haproxy
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: haproxy
+  namespace: kube-system
+spec:
+  minAvailable: 1  # or maxUnavailable: 1 - use only one
+  selector:
+    matchLabels:
+      app: haproxy

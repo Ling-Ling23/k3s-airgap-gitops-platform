@@ -1,0 +1,49 @@
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: infra
+  namespace: argocd
+spec:
+  description: Platform infrastructure - observability, logging, secrets operator
+  sourceRepos:
+    - '*'
+  destinations:
+    - namespace: monitoring
+      server: https://kubernetes.default.svc
+    - namespace: logging
+      server: https://kubernetes.default.svc
+    - namespace: kube-system
+      server: https://kubernetes.default.svc
+    - namespace: vulcan
+      server: https://kubernetes.default.svc
+    - namespace: arc-systems
+      server: https://kubernetes.default.svc
+    - namespace: arc-runners
+      server: https://kubernetes.default.svc
+    # db-replication-check CronJobs write directly into app namespaces
+    - namespace: team1
+      server: https://kubernetes.default.svc
+    - namespace: team2
+      server: https://kubernetes.default.svc
+  clusterResourceWhitelist:
+    - group: '*'
+      kind: '*'
+  syncWindows: []
+---
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: apps
+  namespace: argocd
+spec:
+  description: Application workloads - team1, team2, etc.
+  sourceRepos:
+    - '*'
+  destinations:
+    - namespace: team1
+      server: https://kubernetes.default.svc
+    - namespace: team2
+      server: https://kubernetes.default.svc
+  namespaceResourceWhitelist:
+    - group: '*'
+      kind: '*'

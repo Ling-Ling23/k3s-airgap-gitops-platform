@@ -1,0 +1,30 @@
+replicaCount: 1
+resources:
+  limits:
+    cpu: 0.5
+    memory: 2G
+  requests:
+    cpu: 0.01
+    memory: 256Mi
+    storage: 20Gi
+config:
+  projectGitBranch: "develop"
+hostname: app7-dev-ga
+labels:
+  environment: dev
+database:
+  resources:
+    limits:
+      cpu: 2
+      memory: 2G
+    requests:
+      cpu: 0.5
+      memory: 512Mi
+      storage: 150Gi
+  replHost: ""          # ATL is primary — does not replicate from anyone in normal operation
+  replPort: 3337
+  replication:
+    serverId: 1               # must be unique per cluster (1=ATL/primary, 2=LA/standby)
+    gtidDomainId: 1           # must match serverId cluster (1=ATL, 2=LA)
+    autoIncrementOffset: 1    # 1=odd rows (ATL), 2=even rows (LA)
+    readOnly: "OFF"           # OFF for primary (ATL), ON for standby (LA)

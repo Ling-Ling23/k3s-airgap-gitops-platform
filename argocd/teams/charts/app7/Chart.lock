@@ -1,0 +1,6 @@
+dependencies:
+- name: team1-common
+  repository: file://../team1-common
+  version: 0.1.0
+digest: sha256:83fb0c83b4d651be680b0fb083549e92ea7673e5809c524143eadfdf1e7c5eb6
+generated: "2026-04-13T21:51:26.726936996Z"

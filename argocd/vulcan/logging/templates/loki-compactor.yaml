@@ -1,0 +1,45 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: loki-compactor
+  namespace: {{ .Values.namespace }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: loki-compactor
+  template:
+    metadata:
+      labels:
+        app: loki-compactor
+        app.kubernetes.io/name: loki-compactor
+        app.kubernetes.io/part-of: {{ index .Values.labels "part-of" }}
+        app.kubernetes.io/managed-by: {{ index .Values.labels "managed-by" }}
+        environment: {{ .Values.labels.environment }}
+        team: {{ .Values.labels.team }}
+    spec:
+      securityContext:
+        runAsUser: 1000
+        fsGroup: 1000
+      containers:
+        - name: loki
+          image: $ARTIFACTORY/att-dkr-public-group/grafana/loki:3.5.8
+          args:
+            - -config.file=/etc/loki/local-config.yaml
+            - -target=compactor
+          ports:
+            - containerPort: 3100  # HTTP (optional, for health checks or debugging)
+            - containerPort: 9095  # gRPC (required for querier <-> compactor)
+          volumeMounts:
+            - name: loki-compactor-config
+              mountPath: /etc/loki/local-config.yaml
+              subPath: local-config.yaml
+            - name: loki-data
+              mountPath: /var/loki
+      volumes:
+        - name: loki-compactor-config
+          configMap:
+            name: loki-compactor-config
+        - name: loki-data
+          persistentVolumeClaim:
+            claimName: loki-data

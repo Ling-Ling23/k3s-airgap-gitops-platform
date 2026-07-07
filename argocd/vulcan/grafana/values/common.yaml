@@ -1,0 +1,22 @@
+namespace: monitoring
+labels:
+  team: k3s-admin
+  managed-by: argocd
+  part-of: monitoring
+image: $ARTIFACTORY/$ARTIFACTORY_SUB_PATH/grafana-team1:12.3.2-security-01
+storage:
+  size: 5Gi
+  storageClassName: longhorn
+grafana:
+  resources:
+    requests:
+      cpu: "100m"
+      memory: "256Mi"
+    limits:
+      cpu: "500m"
+      memory: "512Mi"
+datasources:
+  warehouseDBprod:
+    url: "$NODE_7.web..com:54133"
+  warehouseDBdev:
+    url: "$NODE_3.dev..com:54233"

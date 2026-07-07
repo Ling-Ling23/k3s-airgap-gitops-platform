@@ -1,0 +1,80 @@
+# Prometheus Pushgateway — lets short-lived batch jobs (like db-replication-check)
+# push metrics that Prometheus then scrapes on its normal interval, since
+# CronJob pods don't stay alive long enough to be scraped directly.
+#
+# No persistence: metrics are lost on pod restart, but the CronJob re-pushes
+# fresh values every 15 minutes anyway, so this is acceptable for this use case.
+apiVersion: v1
+kind: Service
+metadata:
+  name: prometheus-pushgateway
+  namespace: {{ .Values.namespace }}
+  labels:
+    app: prometheus-pushgateway
+    app.kubernetes.io/name: prometheus-pushgateway
+    app.kubernetes.io/part-of: {{ index .Values.labels "part-of" }}
+    app.kubernetes.io/managed-by: {{ index .Values.labels "managed-by" }}
+    environment: {{ .Values.labels.environment }}
+    team: {{ .Values.labels.team }}
+spec:
+  type: ClusterIP
+  ports:
+    - port: 9091
+      targetPort: 9091
+  selector:
+    app: prometheus-pushgateway
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: prometheus-pushgateway
+  namespace: {{ .Values.namespace }}
+spec:
+  replicas: 1
+  revisionHistoryLimit: 3
+  selector:
+    matchLabels:
+      app: prometheus-pushgateway
+  template:
+    metadata:
+      labels:
+        app: prometheus-pushgateway
+        app.kubernetes.io/name: prometheus-pushgateway
+        app.kubernetes.io/part-of: {{ index .Values.labels "part-of" }}
+        app.kubernetes.io/managed-by: {{ index .Values.labels "managed-by" }}
+        environment: {{ .Values.labels.environment }}
+        team: {{ .Values.labels.team }}
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9091"
+        kubernetes.io/description: "Prometheus Pushgateway - accepts metrics pushed from batch jobs (e.g. db-replication-check CronJobs)"
+        infrateam..com/owner: "infrateam-team"
+    spec:
+      nodeSelector:
+        owner: team1
+      containers:
+      - name: pushgateway
+        image: $ARTIFACTORY/prom/pushgateway:v1.9.0
+        args:
+          - '--web.route-prefix=/'
+        ports:
+        - containerPort: 9091
+        resources:
+          limits:
+            cpu: 100m
+            memory: 128Mi
+          requests:
+            cpu: 25m
+            memory: 32Mi
+        livenessProbe:
+          httpGet:
+            path: /-/healthy
+            port: 9091
+          initialDelaySeconds: 10
+          periodSeconds: 30
+        readinessProbe:
+          httpGet:
+            path: /-/ready
+            port: 9091
+          initialDelaySeconds: 5
+          periodSeconds: 10

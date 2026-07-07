@@ -1,0 +1,197 @@
+---
+# ProxySQL config — LA cluster (test environment)
+# Primary is REMOTE (ATL): writes are forwarded cross-cluster via ATL NodePort.
+# Local LA MariaDB pods are read-only standbys — they serve reads (odd hostgroups: 11, 21, 31, 41, 51).
+# Apps connect to: proxysql.kube-system.svc.cluster.local:6033
+#
+# Each database has its own write hostgroup (10/20/30/40/50) and read hostgroup (11/21/31/41/51).
+# This prevents ProxySQL from routing a user to a backend where they don't exist.
+#
+# FAILOVER PROCEDURE (ATL goes down — per database):
+#   1. Promote LA MariaDB for the affected database:
+#      kubectl exec -n team1 <db>-data-0 -- \
+#        mariadb -u root -p"$ROOT_PASS" -e "STOP SLAVE; SET GLOBAL read_only=OFF;"
+#   2. Update this ConfigMap: for that database, comment out the ATL NodePort entry (hostgroup=N0)
+#      and change its LA standby entry from hostgroup=N1 to hostgroup=N0.
+#   3. kubectl apply -f this file && kubectl rollout restart deployment/proxysql -n kube-system
+#   All apps automatically use local LA MariaDB — no app config changes needed.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: proxysql-config
+  namespace: kube-system
+  labels:
+    app: proxysql
+    app.kubernetes.io/name: proxysql
+    app.kubernetes.io/part-of: infrastructure
+    app.kubernetes.io/managed-by: kubectl
+    team: k3s-admin
+data:
+  proxysql.cnf: |
+    datadir="/var/lib/proxysql"
+
+    admin_variables=
+    {
+        # __ADMIN_PASS__ is substituted by the config-init initContainer from proxysql-secrets
+        admin_credentials="admin:__ADMIN_PASS__"
+        mysql_ifaces="0.0.0.0:6032"
+        refresh_interval=2000
+    }
+
+    mysql_variables=
+    {
+        threads=4
+        max_connections=2048
+        interfaces="0.0.0.0:6033"
+        default_schema="information_schema"
+        server_version="11.8.5-MariaDB"
+        connect_timeout_server=3000
+        monitor_username="proxysql_monitor"
+        monitor_password="__MONITOR_PASS__"
+        monitor_connect_interval=10000
+        monitor_ping_interval=10000
+        ping_timeout_server=500
+    }
+
+    # ---- Backend servers ----
+    # Each database gets its own write hostgroup (N0) and read hostgroup (N1).
+    # This ensures ProxySQL never routes a user to a backend where they don't exist.
+    #
+    # hostgroup 10 = app5 write (ATL primary via NodePort)
+    # hostgroup 11 = app5 read  (LA local standby)
+    # hostgroup 20 = app1 write          (ATL primary via NodePort)
+    # hostgroup 21 = app1 read           (LA local standby)
+    # hostgroup 30 = app2 write       (ATL primary via NodePort)
+    # hostgroup 31 = app2 read        (LA local standby)
+    # hostgroup 40 = app4 write     (ATL primary via NodePort)
+    # hostgroup 41 = app4 read      (LA local standby)
+    # hostgroup 50 = app7 write           (ATL primary via NodePort)
+    # hostgroup 51 = app7 read            (LA local standby)
+    # hostgroup 60 = app6 write (ATL primary via NodePort)
+    # hostgroup 61 = app6 read  (LA local standby)
+    # hostgroup 70 = app8 write        (ATL primary via NodePort)
+    # hostgroup 71 = app8 read         (LA local standby)
+    mysql_servers=
+    (
+        # ---- app5 ----
+        # NORMAL OPERATION: writes go to ATL primary via NodePort
+        { address="$IP_ADDR", port=30085, hostgroup=10, max_connections=200, weight=1, comment="app5 ATL primary via NodePort" },
+        # Local LA standby — serves reads. FAILOVER: change hostgroup to 10 and remove ATL entry
+        { address="app5-mariadb.team1.svc.cluster.local", port=3306,  hostgroup=11, max_connections=200, weight=1, comment="app5 LA standby (reads)" },
+        # FAILOVER STATE: { address="app5-mariadb.team1.svc.cluster.local", port=3306, hostgroup=10, ... }
+
+        # ---- app1 ----
+        { address="$IP_ADDR", port=30084, hostgroup=20, max_connections=200, weight=1, comment="app1 ATL primary via NodePort" },
+        { address="app1-mariadb.team1.svc.cluster.local", port=3306,  hostgroup=21, max_connections=200, weight=1, comment="app1 LA standby (reads)" },
+        # FAILOVER STATE: { address="app1-mariadb.team1.svc.cluster.local", port=3306, hostgroup=20, ... }
+
+        # ---- app2 ----
+        { address="$IP_ADDR", port=30082, hostgroup=30, max_connections=200, weight=1, comment="app2 ATL primary via NodePort" },
+        { address="app2-mariadb.team1.svc.cluster.local", port=3306,  hostgroup=31, max_connections=200, weight=1, comment="app2 LA standby (reads)" },
+        # FAILOVER STATE: { address="app2-mariadb.team1.svc.cluster.local", port=3306, hostgroup=30, ... }
+
+        # ---- app4 ----
+        { address="$IP_ADDR", port=30081, hostgroup=40, max_connections=200, weight=1, comment="app4 ATL primary via NodePort" },
+        { address="app4-mariadb.team1.svc.cluster.local", port=3306,  hostgroup=41, max_connections=200, weight=1, comment="app4 LA standby (reads)" },
+        # FAILOVER STATE: { address="app4-mariadb.team1.svc.cluster.local", port=3306, hostgroup=40, ... }
+
+        # ---- app6 ----
+        { address="$IP_ADDR", port=30087, hostgroup=60, max_connections=200, weight=1, comment="app6 ATL primary via NodePort" },
+        { address="app6-mariadb.team1.svc.cluster.local", port=3306,  hostgroup=61, max_connections=200, weight=1, comment="app6 LA standby (reads)" },
+        # FAILOVER STATE: { address="app6-mariadb.team1.svc.cluster.local", port=3306, hostgroup=60, ... }
+
+        # ---- app7 ----
+        { address="$IP_ADDR", port=30083, hostgroup=50, max_connections=200, weight=1, comment="app7 ATL primary via NodePort" },
+        { address="app7-mariadb.team2.svc.cluster.local", port=3306,  hostgroup=51, max_connections=200, weight=1, comment="app7 LA standby (reads)" },
+        # FAILOVER STATE: { address="app7-mariadb.team2.svc.cluster.local", port=3306, hostgroup=50, ... }
+
+        # ---- app8 ----
+        { address="$IP_ADDR", port=30086, hostgroup=70, max_connections=200, weight=1, comment="app8 ATL primary via NodePort" },
+        { address="app8-mariadb.team1.svc.cluster.local", port=3306,  hostgroup=71, max_connections=200, weight=1, comment="app8 LA standby (reads)" },
+        # FAILOVER STATE: { address="app8-mariadb.team1.svc.cluster.local", port=3306, hostgroup=70, ... }
+    )
+
+    # ---- Frontend users ----
+    # default_hostgroup = write hostgroup for each database.
+    # transaction_persistent=1 keeps SELECT FOR UPDATE on the write backend within a transaction.
+    mysql_users=
+    (
+        {
+            username="app1_app"
+            password="__app1_PASS__"   # substituted by initContainer from proxysql-secrets key: app1-app-password
+            default_hostgroup=20
+            transaction_persistent=1
+            active=1
+            default_schema="app1"
+            comment="app1 app user"
+        },
+        {
+            username="app2_app"
+            password="__app2_PASS__"   # substituted by initContainer from proxysql-secrets key: app2-app-password
+            default_hostgroup=30
+            transaction_persistent=1
+            active=1
+            default_schema="app2"
+            comment="app2 app user"
+        },
+        {
+            username="app4_app"
+            password="__app4_PASS__"   # substituted by initContainer from proxysql-secrets key: app4-app-password
+            default_hostgroup=40
+            transaction_persistent=1
+            active=1
+            default_schema="app4"
+            comment="app4 app user"
+        },
+        {
+            username="app5_app"
+            password="__app5_PASS__"   # substituted by initContainer from proxysql-secrets key: app5-app-password
+            default_hostgroup=10
+            transaction_persistent=1
+            active=1
+            default_schema="app5"
+            comment="app5 app user"
+        },
+        {
+            username="app6_app"
+            password="__app6_PASS__"   # substituted by initContainer from proxysql-secrets key: app6-app-password
+            default_hostgroup=60
+            transaction_persistent=1
+            active=1
+            default_schema="app6"
+            comment="app6 app user"
+        },
+        {
+            username="app7_app"
+            password="__app7_PASS__"   # substituted by initContainer from proxysql-secrets key: app7-app-password
+            default_hostgroup=50
+            transaction_persistent=1
+            active=1
+            default_schema="app7"
+            comment="app7 app user"
+        },
+        {
+            username="app8_app"
+            password="__app8_PASS__"   # substituted by initContainer from proxysql-secrets key: app8-app-password
+            default_hostgroup=70
+            transaction_persistent=1
+            active=1
+            default_schema="app8"
+            comment="app8 app user"
+        }
+    )
+
+    # ---- Query routing rules ----
+    # Route plain SELECTs to the local LA standby (read hostgroup = write hostgroup + 1).
+    # SELECT FOR UPDATE is handled by transaction_persistent=1 — no rule needed.
+    # username field scopes each rule to the correct database's read hostgroup.
+    mysql_query_rules=
+    (
+        { rule_id=1,  username="app5_app",  active=1, match_pattern="^SELECT", destination_hostgroup=11, apply=1, comment="app5 SELECTs to LA standby" },
+        { rule_id=2,  username="app1_app",           active=1, match_pattern="^SELECT", destination_hostgroup=21, apply=1, comment="app1 SELECTs to LA standby" },
+        { rule_id=3,  username="app2_app",        active=1, match_pattern="^SELECT", destination_hostgroup=31, apply=1, comment="app2 SELECTs to LA standby" },
+        { rule_id=4,  username="app4_app",      active=1, match_pattern="^SELECT", destination_hostgroup=41, apply=1, comment="app4 SELECTs to LA standby" },
+        { rule_id=5,  username="app7_app",            active=1, match_pattern="^SELECT", destination_hostgroup=51, apply=1, comment="app7 SELECTs to LA standby" },
+        { rule_id=6,  username="app6_app", active=1, match_pattern="^SELECT", destination_hostgroup=61, apply=1, comment="app6 SELECTs to LA standby" },
+        { rule_id=7,  username="app8_app",        active=1, match_pattern="^SELECT", destination_hostgroup=71, apply=1, comment="app8 SELECTs to LA standby" }
+    )

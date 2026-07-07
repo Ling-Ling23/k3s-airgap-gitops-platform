@@ -1,0 +1,15 @@
+namespace: monitoring
+labels:
+  team: k3s-admin
+  managed-by: argocd
+  part-of: monitoring
+
+alertmanager:
+  resources:
+    limits:
+      memory: "256Mi"
+
+cadvisor:
+  resources:
+    limits:
+      memory: "256Mi"

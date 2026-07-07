@@ -1,0 +1,198 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: mongodb
+  namespace: {{ .Values.namespace }}
+  labels:
+    app: mongodb
+    app.kubernetes.io/name: mongodb
+    app.kubernetes.io/part-of: {{ index .Values.labels "part-of" }}
+    app.kubernetes.io/managed-by: {{ index .Values.labels "managed-by" }}
+    environment: {{ .Values.labels.environment }}
+    team: {{ .Values.labels.team }}
+spec:
+  replicas: 1
+  serviceName: mongodb
+  updateStrategy:
+    type: RollingUpdate
+    rollingUpdate:
+      partition: 0
+  selector:
+    matchLabels:
+      app: mongodb
+  template:
+    metadata:
+      labels:
+        app: mongodb
+        app.kubernetes.io/name: mongodb
+        app.kubernetes.io/part-of: {{ index .Values.labels "part-of" }}
+        app.kubernetes.io/managed-by: {{ index .Values.labels "managed-by" }}
+        environment: {{ .Values.labels.environment }}
+        team: {{ .Values.labels.team }}
+    spec:
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 60
+      tolerations: # MongoDB will now be rescheduled within ~30 seconds of a node failure instead of 5 minutes.
+      - key: "node.kubernetes.io/unreachable"
+        operator: "Exists"
+        effect: "NoExecute"
+        tolerationSeconds: 30
+      - key: "node.kubernetes.io/not-ready"
+        operator: "Exists"
+        effect: "NoExecute"
+        tolerationSeconds: 30
+      securityContext:
+        runAsUser: 0
+        fsGroup: 0
+
+      volumes:
+      - name: certs
+        hostPath:
+          path: /etc/ssl/certs
+      - name: ca-certs
+        hostPath:
+          path: /usr/share/ca-certificates/
+      - name: localtime
+        hostPath:
+          path: /etc/localtime
+      - name: custom-certs
+        hostPath:
+          path: /home/$TOOLING_ACCOUNT_ID/vulcan-docker/skel/certs
+      - name: mongo-config
+        configMap:
+          name: mongodb-config
+      - name: mongo-init
+        configMap:
+          name: mongodb-init-script
+      - name: mongodb-secrets
+        secret:
+          secretName: mongodb-secrets
+      - name: team1-certs
+        secret:
+          secretName: team1-certs
+      - name: mongo-key
+        emptyDir: {}
+
+
+      initContainers:
+      - name: keyfile-perms
+        image: $ARTIFACTORY/busybox:latest
+        command: ["sh","-c","
+          cp /in/mongodb.key /out/mongodb.key &&
+          chmod 0400 /out/mongodb.key &&
+          chown 999:999 /out/mongodb.key"]
+        resources:
+          requests:
+            cpu: {{ .Values.resources.initContainer.requests.cpu | quote }}
+            memory: {{ .Values.resources.initContainer.requests.memory | quote }}
+          limits:
+            cpu: {{ .Values.resources.initContainer.limits.cpu | quote }}
+            memory: {{ .Values.resources.initContainer.limits.memory | quote }}
+        volumeMounts:
+        - name: mongodb-secrets
+          mountPath: /in/mongodb.key
+          subPath: mongodb-key   # secret key name -> mounted as mongodb.key
+          readOnly: true
+        - name: mongo-key
+          mountPath: /out
+
+      containers:
+      - name: mongodb
+        image: $ARTIFACTORY/mongo:8.0.26
+        args: ["--port", "28017", "--config", "/conf/mongo.conf"]
+        #args: ["--port", "28017", "--config", "/conf/mongo.conf", "--replSet", "replicaMongodbData"]
+        securityContext:
+          readOnlyRootFilesystem: false
+        resources:
+          requests:
+            cpu: {{ .Values.resources.mongodb.requests.cpu | quote }}
+            memory: {{ .Values.resources.mongodb.requests.memory | quote }}
+          limits:
+            cpu: {{ .Values.resources.mongodb.limits.cpu | quote }}
+            memory: {{ .Values.resources.mongodb.limits.memory | quote }}
+        ports:
+        - containerPort: 28017
+        env:
+        - name: HTTPS_PROXY
+          value: "$PROXY"
+        - name: HTTP_PROXY
+          value: "$PROXY"
+        - name: TERM
+          value: "xterm"
+        - name: MONGO_INITDB_ROOT_USERNAME
+          value: "mongo_prod_user"
+        - name: MONGO_INITDB_ROOT_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: mongodb-secrets
+              key: MONGO_INITDB_ROOT_PASSWORD
+        - name: MONGO_INITDB_DATABASE
+          value: "team1_mongo"
+        #- name: APP_ID
+        #  value: "your-app-id"
+        - name: APP_ENV
+          value: "test"
+        - name: APP_NAME
+          value: "mongodb_data"
+        - name: APP_TYPE
+          value: "mongodb_data"
+        #- name: APP_LOCATION
+        #  value: "<your-value>"
+        - name: GLIBC_TUNABLES
+          value: "glibc.pthread.rseq=0"
+        volumeMounts:
+        - name: mongodata-team1
+          mountPath: /data/db
+        - name: certs
+          mountPath: /etc/ssl/certs
+          readOnly: true
+        - name: ca-certs
+          mountPath: /usr/share/ca-certificates/
+          readOnly: true
+        - name: localtime
+          mountPath: /etc/localtime
+          readOnly: true
+        - name: custom-certs
+          mountPath: /certs
+        - name: mongo-config
+          mountPath: /conf/mongo.conf
+          subPath: mongo.conf
+        - name: mongo-init
+          mountPath: /docker-entrypoint-initdb.d/init-mongo.js
+          subPath: init-mongo.js
+          readOnly: true
+        #- name: secrets
+        #  mountPath: /custom-secrets
+        #  readOnly: true
+        #- name: run-secrets
+        #  mountPath: /run/secrets
+        ##- name: mongo-key
+        ##  mountPath: /run/secrets
+        ##  readOnly: true
+        - name: mongo-key
+          mountPath: /run/secrets
+          readOnly: true
+        ##- name: mongodb-secrets
+        ##  mountPath: /run/tls
+        ##  readOnly: true
+        - name: team1-certs
+          mountPath: /run/tls
+          readOnly: true
+
+  volumeClaimTemplates:
+  - metadata:
+      name: mongodata-team1
+      labels:
+        app: mongodb
+        app.kubernetes.io/name: mongodb
+        app.kubernetes.io/part-of: {{ index .Values.labels "part-of" }}
+        app.kubernetes.io/managed-by: {{ index .Values.labels "managed-by" }}
+        environment: {{ .Values.labels.environment }}
+        team: {{ .Values.labels.team }}
+    spec:
+      accessModes:
+        - ReadWriteOnce
+      storageClassName: longhorn
+      resources:
+        requests:
+          storage: {{ .Values.storage.size }}
